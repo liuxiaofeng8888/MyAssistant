@@ -7,9 +7,10 @@ import android.os.Handler;
 import android.os.Looper;
 import android.os.SystemClock;
 import android.speech.tts.TextToSpeech;
-import android.view.MotionEvent;
+import android.view.View;
 import android.widget.Button;
 import android.widget.EditText;
+import android.widget.FrameLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
 import androidx.annotation.NonNull;
@@ -23,6 +24,10 @@ import com.konovalov.vad.webrtc.VadWebRTC;
 import com.konovalov.vad.webrtc.config.FrameSize;
 import com.konovalov.vad.webrtc.config.Mode;
 import com.konovalov.vad.webrtc.config.SampleRate;
+import com.myassistant.android.kws.VoskKwsService;
+import com.myassistant.android.ui.ResultOverlayDialog;
+import com.myassistant.android.ui.TypewriterTextView;
+import com.myassistant.android.ui.VpaOrbView;
 import org.json.JSONObject;
 
 public class MainActivity extends AppCompatActivity {
@@ -37,8 +42,12 @@ public class MainActivity extends AppCompatActivity {
   private TextView logView;
   private ScrollView scroll;
   private Button btnConnect;
-  private Button btnRecord;
+  private Button btnWake;
   private EditText serverUrl;
+  private FrameLayout vpaContainer;
+  private VpaOrbView vpaOrb;
+  private TextView asrTitle;
+  private TypewriterTextView asrText;
 
   private VoiceWsClient wsClient;
   private final AudioRecorder recorder = new AudioRecorder();
@@ -51,6 +60,19 @@ public class MainActivity extends AppCompatActivity {
   private TextToSpeech tts;
   private volatile boolean ttsReady = false;
 
+  private VoskKwsService kws;
+  private volatile boolean kwsReady = false;
+
+  private enum UiState {
+    IDLE,
+    AWAKE,
+    LISTENING,
+    PROCESSING
+  }
+
+  private volatile UiState uiState = UiState.IDLE;
+  private volatile String lastAsr = "";
+
   @Override
   protected void onCreate(Bundle savedInstanceState) {
     super.onCreate(savedInstanceState);
@@ -59,11 +81,16 @@ public class MainActivity extends AppCompatActivity {
     logView = findViewById(R.id.logView);
     scroll = findViewById(R.id.scroll);
     btnConnect = findViewById(R.id.btnConnect);
-    btnRecord = findViewById(R.id.btnRecord);
+    btnWake = findViewById(R.id.btnWake);
     serverUrl = findViewById(R.id.serverUrl);
+    vpaContainer = findViewById(R.id.vpaContainer);
+    vpaOrb = findViewById(R.id.vpaOrb);
+    asrTitle = findViewById(R.id.asrTitle);
+    asrText = findViewById(R.id.asrText);
 
     initTts();
     initVad();
+    initKws();
 
     wsClient = new VoiceWsClient(new VoiceWsClient.Listener() {
       @Override
@@ -81,7 +108,7 @@ public class MainActivity extends AppCompatActivity {
       public void onState(boolean connected) {
         ui.post(() -> {
           btnConnect.setText(connected ? "断开" : "连接");
-          btnRecord.setEnabled(connected);
+          btnWake.setEnabled(connected);
         });
       }
     });
@@ -97,26 +124,120 @@ public class MainActivity extends AppCompatActivity {
       }
     });
 
-    btnRecord.setText("按住说话");
-    btnRecord.setOnTouchListener((v, event) -> {
-      if (!ensureAudioPermission()) return true;
-      if (!wsClient.isConnected()) return true;
+    btnWake.setOnClickListener(v -> {
+      if (!ensureAudioPermission()) return;
 
-      switch (event.getAction()) {
-        case MotionEvent.ACTION_DOWN -> {
-          startRecording();
-          return true;
-        }
-        case MotionEvent.ACTION_UP -> {
-          stopRecording();
-          return true;
-        }
-        case MotionEvent.ACTION_CANCEL -> {
-          cancelRecording();
-          return true;
+      if (recording) {
+        // 作为“取消/退出唤醒”的快捷入口
+        cancelRecording();
+        setUiState(UiState.IDLE);
+        return;
+      }
+
+      // 手动唤醒（KWS 也会走同一套流程）
+      onWakeTriggered("manual");
+    });
+
+    setUiState(UiState.IDLE);
+  }
+
+  private void initKws() {
+    kws = new VoskKwsService(this, new VoskKwsService.Listener() {
+      @Override
+      public void onLog(@NonNull String line) {
+        appendLog(line);
+      }
+
+      @Override
+      public void onWakeWord(@NonNull String wakeWord) {
+        appendLog("KWS hit: " + wakeWord);
+        onWakeTriggered(wakeWord);
+      }
+
+      @Override
+      public void onModelReady() {
+        kwsReady = true;
+        appendLog("KWS ready");
+        // 如果用户已经授权录音，则直接开始常驻监听
+        if (ContextCompat.checkSelfPermission(MainActivity.this, Manifest.permission.RECORD_AUDIO)
+            == PackageManager.PERMISSION_GRANTED) {
+          kws.start();
         }
       }
-      return false;
+
+      @Override
+      public void onError(@NonNull String message, Throwable t) {
+        kwsReady = false;
+        appendLog(message + (t != null ? (": " + t.getMessage()) : ""));
+      }
+    });
+
+    // 默认：assets/model （你需要把 Vosk 模型文件夹放到 android/app/src/main/assets/model）
+    kws.setWakeWords(new String[]{"你好助手", "小助手", "你好小助手", "嗨助手"});
+    kws.setCooldownMs(1800);
+    kws.initModelFromAssets("model");
+  }
+
+  private void onWakeTriggered(@NonNull String source) {
+    if (!ensureAudioPermission()) return;
+    if (!wsClient.isConnected()) {
+      appendLog("wake ignored (not connected): " + source);
+      return;
+    }
+    if (recording) return;
+
+    lastAsr = "";
+    setUiState(UiState.AWAKE);
+    speak("你好主人");
+    ui.postDelayed(() -> {
+      if (!wsClient.isConnected()) return;
+      startRecording();
+    }, 220);
+  }
+
+  private void setUiState(UiState s) {
+    uiState = s;
+    ui.post(() -> {
+      switch (s) {
+        case IDLE -> {
+          btnWake.setText("点击唤醒");
+          vpaContainer.setVisibility(View.GONE);
+          vpaOrb.stop();
+          asrTitle.setVisibility(View.GONE);
+          asrText.setVisibility(View.GONE);
+          asrText.stopAll();
+        }
+        case AWAKE -> {
+          btnWake.setText("取消");
+          vpaContainer.setVisibility(View.VISIBLE);
+          vpaOrb.start();
+          asrTitle.setVisibility(View.GONE);
+          asrText.setVisibility(View.GONE);
+          asrText.stopAll();
+        }
+        case LISTENING -> {
+          btnWake.setText("取消");
+          vpaContainer.setVisibility(View.VISIBLE);
+          vpaOrb.start();
+          asrTitle.setVisibility(View.VISIBLE);
+          asrTitle.setText("识别中");
+          asrText.setVisibility(View.VISIBLE);
+          if (lastAsr == null || lastAsr.isEmpty()) {
+            asrText.startDots(220);
+          } else {
+            asrText.setTextImmediate(lastAsr);
+          }
+        }
+        case PROCESSING -> {
+          btnWake.setText("取消");
+          vpaContainer.setVisibility(View.VISIBLE);
+          vpaOrb.start();
+          asrTitle.setVisibility(View.VISIBLE);
+          asrTitle.setText("思考中");
+          asrText.setVisibility(View.VISIBLE);
+          asrText.startDots(260);
+        }
+      }
     });
   }
 
@@ -154,9 +275,9 @@ public class MainActivity extends AppCompatActivity {
     recording = true;
     turnStarted = false;
     lastSpeechAtMs = 0L;
-    btnRecord.setText("松开结束");
 
     stopTts();
+    setUiState(UiState.LISTENING);
     recorder.start(CHUNK_SIZE, new AudioRecorder.Callback() {
       @Override
       public void onAudioChunk(byte[] chunk, int len) {
@@ -213,19 +334,19 @@ public class MainActivity extends AppCompatActivity {
   private void stopRecording() {
     if (!recording) return;
     recording = false;
-    btnRecord.setText("按住说话");
     recorder.stop();
     wsClient.stopTurn();
     appendLog("stopped");
+    setUiState(UiState.PROCESSING);
   }
 
   private void cancelRecording() {
     if (!recording) return;
     recording = false;
-    btnRecord.setText("按住说话");
     recorder.stop();
     wsClient.cancelTurn();
     appendLog("cancelled");
+    setUiState(UiState.IDLE);
   }
 
   private void stopRecordingIfNeeded() {
@@ -248,6 +369,9 @@ public class MainActivity extends AppCompatActivity {
       recorder.stop();
     } catch (Exception ignored) {}
     try {
+      if (kws != null) kws.stop();
+    } catch (Exception ignored) {}
+    try {
       wsClient.disconnect();
     } catch (Exception ignored) {}
     try {
@@ -267,6 +391,9 @@ public class MainActivity extends AppCompatActivity {
     if (requestCode == REQ_AUDIO) {
       if (grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
         appendLog("RECORD_AUDIO granted");
+        try {
+          if (kws != null && kwsReady) kws.start();
+        } catch (Exception ignored) {}
       } else {
         appendLog("RECORD_AUDIO denied");
       }
@@ -304,8 +431,37 @@ public class MainActivity extends AppCompatActivity {
   private void handleServerMessage(JSONObject json) {
     try {
       String type = json.optString("type", "");
+      if ("asr_partial".equals(type) || "asr_interim".equals(type)) {
+        String text = json.optString("text", "");
+        lastAsr = text;
+        if (uiState == UiState.LISTENING) {
+          ui.post(() -> asrText.setTextImmediate(text));
+        }
+        return;
+      }
+      if ("asr_final".equals(type)) {
+        String text = json.optString("text", "");
+        lastAsr = text;
+        if (uiState == UiState.LISTENING || uiState == UiState.PROCESSING) {
+          ui.post(() -> {
+            asrTitle.setVisibility(TextView.VISIBLE);
+            asrTitle.setText("你说的是");
+            asrText.setVisibility(TextView.VISIBLE);
+            asrText.typeTo(text, 18, 0);
+          });
+        }
+        return;
+      }
       if ("assistant_final".equals(type)) {
         String text = json.optString("text", "");
+        ui.post(() -> {
+          try {
+            new ResultOverlayDialog(this, text == null ? "" : text).show();
+          } catch (Exception e) {
+            appendLog("show result dialog failed: " + e.getMessage());
+          }
+          setUiState(UiState.IDLE);
+        });
         speak(text);
       }
     } catch (Exception ignored) {}

@@ -39,5 +39,8 @@ dependencies {
 
     // WebRTC VAD (GMM) - lightweight on-device voice activity detection
     implementation 'com.github.gkonovalov.android-vad:webrtc:2.0.10'
+
+    // Vosk (offline ASR / KWS)
+    implementation 'com.alphacephei:vosk-android:0.3.75'
 }
 
