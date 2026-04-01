@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  开发联调：允许 HTTP/WebSocket 明文（ws://）。
+  上架/生产环境请改为 wss:// 并收紧策略，勿长期全开 cleartext。
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>

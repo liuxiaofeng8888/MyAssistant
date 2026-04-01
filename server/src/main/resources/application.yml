@@ -1,0 +1,32 @@
+server:
+  port: 8080
+  # 允许局域网内车机/真机访问（勿仅绑定 127.0.0.1）
+  address: 0.0.0.0
+
+spring:
+  application:
+    name: myassistant-server
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+
+myassistant:
+  auth:
+    # MVP: 先用简单 token；后续可换成 JWT/账号体系
+    enabled: false
+    static-bearer-token: "dev-token"
+
+  iflytek:
+    # 讯飞配置占位：先跑通 Mock 模式
+    enabled: false
+    app-id: ""
+    api-key: ""
+    api-secret: ""
+    # ASR/大模型等服务的具体 URL 可能随产品线变化，这里先留占位
+    # 大模型多语种语音识别（短音频≤60秒）示例：wss://iat.cn-huabei-1.xf-yun.com/v1
+    asr-ws-url: "wss://iat.cn-huabei-1.xf-yun.com/v1"
+    spark-ws-url: ""
+

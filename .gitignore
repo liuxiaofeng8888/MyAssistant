@@ -1,0 +1,33 @@
+# Maven (server)
+server/target/
+server/.m2/
+
+# Android
+android/.gradle/
+android/**/build/
+android/local.properties
+android/*.iml
+android/.idea/
+android/.cxx/
+android/captures/
+*.apk
+*.aab
+*.ap_
+*.dex
+
+# IDE / OS
+.idea/
+*.iml
+.DS_Store
+Thumbs.db
+
+# Logs & temp
+*.log
+*.tmp
+*.swp
+*~
+
+# Env / secrets (do not commit)
+.env
+.env.*
+*.pem
