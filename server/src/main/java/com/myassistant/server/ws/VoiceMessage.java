@@ -98,5 +98,13 @@ public class VoiceMessage {
     m.retryable = retryable;
     return m;
   }
+
+  public static VoiceMessage wakeupDetected(String clientMsgId, String wakeWord) {
+    VoiceMessage m = new VoiceMessage();
+    m.type = "wakeup_detected";
+    m.client_msg_id = clientMsgId;
+    m.text = wakeWord;
+    return m;
+  }
 }
 

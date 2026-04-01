@@ -20,6 +20,10 @@ myassistant:
     # Vosk 模型目录（解压后的文件夹路径）
     vosk-model-path: ${MYASSISTANT_VOSK_MODEL_PATH:models/vosk-model-small-cn-0.22}
 
+  wakeup:
+    enabled: ${MYASSISTANT_WAKEUP_ENABLED:true}
+    wake-word: ${MYASSISTANT_WAKE_WORD:嗨 小布}
+
   auth:
     # MVP: 先用简单 token；后续可换成 JWT/账号体系
     enabled: false

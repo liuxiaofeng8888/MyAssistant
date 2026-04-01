@@ -36,5 +36,8 @@ dependencies {
     implementation 'androidx.constraintlayout:constraintlayout:2.2.0'
 
     implementation 'com.squareup.okhttp3:okhttp:4.12.0'
+
+    // WebRTC VAD (GMM) - lightweight on-device voice activity detection
+    implementation 'com.github.gkonovalov.android-vad:webrtc:2.0.10'
 }
 

@@ -9,6 +9,7 @@ public class MyAssistantProperties {
   private final Auth auth = new Auth();
   private final Asr asr = new Asr();
   private final Iflytek iflytek = new Iflytek();
+  private final Wakeup wakeup = new Wakeup();
 
   public Auth getAuth() {
     return auth;
@@ -20,6 +21,10 @@ public class MyAssistantProperties {
 
   public Iflytek getIflytek() {
     return iflytek;
+  }
+
+  public Wakeup getWakeup() {
+    return wakeup;
   }
 
   public static class Asr {
@@ -124,6 +129,33 @@ public class MyAssistantProperties {
 
     public void setSparkWsUrl(String sparkWsUrl) {
       this.sparkWsUrl = sparkWsUrl;
+    }
+  }
+
+  public static class Wakeup {
+    /**
+     * 是否启用唤醒词。默认启用。
+     */
+    private boolean enabled = true;
+    /**
+     * 唤醒词，默认：嗨 小布（匹配时会忽略空格/常见标点）。
+     */
+    private String wakeWord = "嗨 小布";
+
+    public boolean isEnabled() {
+      return enabled;
+    }
+
+    public void setEnabled(boolean enabled) {
+      this.enabled = enabled;
+    }
+
+    public String getWakeWord() {
+      return wakeWord;
+    }
+
+    public void setWakeWord(String wakeWord) {
+      this.wakeWord = wakeWord;
     }
   }
 }

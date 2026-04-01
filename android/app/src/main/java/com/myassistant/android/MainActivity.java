@@ -5,6 +5,7 @@ import android.content.pm.PackageManager;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.SystemClock;
 import android.speech.tts.TextToSpeech;
 import android.view.MotionEvent;
 import android.widget.Button;
@@ -17,11 +18,19 @@ import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
 import java.util.Locale;
 import java.util.UUID;
+import com.konovalov.vad.webrtc.Vad;
+import com.konovalov.vad.webrtc.VadWebRTC;
+import com.konovalov.vad.webrtc.config.FrameSize;
+import com.konovalov.vad.webrtc.config.Mode;
+import com.konovalov.vad.webrtc.config.SampleRate;
 import org.json.JSONObject;
 
 public class MainActivity extends AppCompatActivity {
   private static final int REQ_AUDIO = 1001;
-  private static final int CHUNK_SIZE = 1280; // 与服务端/讯飞建议一致
+  // WebRTC VAD 支持 16k 下 160/320/480 samples（10/20/30ms）
+  // AudioRecorder.read 是按字节读 PCM16，因此 320 samples = 640 bytes
+  private static final int CHUNK_SIZE = 640;
+  private static final long VAD_SILENCE_STOP_MS = 900; // 连续静音这么久就自动 stop
 
   private final Handler ui = new Handler(Looper.getMainLooper());
 
@@ -35,6 +44,9 @@ public class MainActivity extends AppCompatActivity {
   private final AudioRecorder recorder = new AudioRecorder();
 
   private volatile boolean recording = false;
+  private VadWebRTC vad;
+  private volatile long lastSpeechAtMs = 0L;
+  private volatile boolean turnStarted = false;
 
   private TextToSpeech tts;
   private volatile boolean ttsReady = false;
@@ -51,6 +63,7 @@ public class MainActivity extends AppCompatActivity {
     serverUrl = findViewById(R.id.serverUrl);
 
     initTts();
+    initVad();
 
     wsClient = new VoiceWsClient(new VoiceWsClient.Listener() {
       @Override
@@ -107,6 +120,24 @@ public class MainActivity extends AppCompatActivity {
     });
   }
 
+  private void initVad() {
+    try {
+      // 推荐参数：16k + 320 frame + VERY_AGGRESSIVE + (speech 50ms / silence 300ms)
+      vad = Vad.builder()
+          .setSampleRate(SampleRate.SAMPLE_RATE_16K)
+          .setFrameSize(FrameSize.FRAME_SIZE_320)
+          .setMode(Mode.VERY_AGGRESSIVE)
+          .setSpeechDurationMs(50)
+          .setSilenceDurationMs(300)
+          .build();
+      appendLog("WebRTC VAD ready");
+    } catch (Exception e) {
+      // 如果 native 库加载失败等，让应用仍可录音（降级为无 VAD 门控）
+      vad = null;
+      appendLog("WebRTC VAD init failed: " + e.getMessage());
+    }
+  }
+
   private boolean ensureAudioPermission() {
     int granted = ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO);
     if (granted == PackageManager.PERMISSION_GRANTED) return true;
@@ -121,14 +152,48 @@ public class MainActivity extends AppCompatActivity {
     }
     if (recording) return;
     recording = true;
+    turnStarted = false;
+    lastSpeechAtMs = 0L;
     btnRecord.setText("松开结束");
 
     stopTts();
-    wsClient.startTurn();
     recorder.start(CHUNK_SIZE, new AudioRecorder.Callback() {
       @Override
       public void onAudioChunk(byte[] chunk, int len) {
-        wsClient.sendAudio(chunk, len);
+        long now = SystemClock.elapsedRealtime();
+        boolean isSpeech;
+        if (vad != null) {
+          // VadWebRTC 要求 ByteArray 长度为 2 * frameSize（即 640 bytes）
+          if (len != CHUNK_SIZE) {
+            // 尽量不崩：长度不符合就按“非语音”处理
+            isSpeech = false;
+          } else {
+            isSpeech = vad.isSpeech(chunk);
+          }
+        } else {
+          // VAD 初始化失败时，直接当作“有声”，保持原功能可用
+          isSpeech = true;
+        }
+
+        if (isSpeech) {
+          lastSpeechAtMs = now;
+          if (!turnStarted) {
+            wsClient.startTurn();
+            turnStarted = true;
+            appendLog("VAD: speech start -> startTurn()");
+          }
+          wsClient.sendAudio(chunk, len);
+          return;
+        }
+
+        // 静音：如果已经开始过 turn，则静音超时后自动 stop 并结束录音
+        if (turnStarted && lastSpeechAtMs > 0 && (now - lastSpeechAtMs) >= VAD_SILENCE_STOP_MS) {
+          appendLog("VAD: silence timeout -> stopTurn()");
+          ui.post(() -> {
+            // 复用现有停止逻辑，保证 UI 状态一致
+            stopRecording();
+          });
+        }
       }
 
       @Override
@@ -142,7 +207,7 @@ public class MainActivity extends AppCompatActivity {
       }
     });
 
-    appendLog("recording... (press and hold)");
+    appendLog("recording... (VAD enabled, speech-gated)");
   }
 
   private void stopRecording() {
@@ -184,6 +249,9 @@ public class MainActivity extends AppCompatActivity {
     } catch (Exception ignored) {}
     try {
       wsClient.disconnect();
+    } catch (Exception ignored) {}
+    try {
+      if (vad != null) vad.close();
     } catch (Exception ignored) {}
     try {
       if (tts != null) {

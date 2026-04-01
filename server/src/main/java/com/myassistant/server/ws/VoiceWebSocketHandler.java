@@ -6,6 +6,8 @@ import com.myassistant.server.service.llm.NluResult;
 import com.myassistant.server.service.llm.NluService;
 import com.myassistant.server.service.tool.ToolDispatcher;
 import com.myassistant.server.service.tool.ToolResult;
+import com.myassistant.server.service.wakeup.WakeWordResult;
+import com.myassistant.server.service.wakeup.WakeWordService;
 import java.io.ByteArrayInputStream;
 import java.io.DataInputStream;
 import java.io.IOException;
@@ -29,14 +31,16 @@ public class VoiceWebSocketHandler extends TextWebSocketHandler {
   private final AsrService asr;
   private final NluService nlu;
   private final ToolDispatcher tools;
+  private final WakeWordService wakeup;
 
   private final ConcurrentHashMap<String, VoiceSessionState> states = new ConcurrentHashMap<>();
 
-  public VoiceWebSocketHandler(ObjectMapper om, AsrService asr, NluService nlu, ToolDispatcher tools) {
+  public VoiceWebSocketHandler(ObjectMapper om, AsrService asr, NluService nlu, ToolDispatcher tools, WakeWordService wakeup) {
     this.om = om;
     this.asr = asr;
     this.nlu = nlu;
     this.tools = tools;
+    this.wakeup = wakeup;
   }
 
   @Override
@@ -113,6 +117,22 @@ public class VoiceWebSocketHandler extends TextWebSocketHandler {
           return;
         }
         send(session, VoiceMessage.asrFinal(clientMsgId, userText));
+
+        // 唤醒：检测“嗨 小布”等唤醒词。未唤醒则不进入后续 NLU/工具链。
+        WakeWordResult ww = wakeup.detect(userText);
+        if (!ww.awakened) {
+          send(session, VoiceMessage.assistantFinal(clientMsgId, "请先说“" + ww.wakeWord + "”唤醒我。"));
+          return;
+        }
+        if (ww.remainingText != null && !ww.remainingText.trim().isEmpty()) {
+          // 如果同一句里包含唤醒词+指令，剥离唤醒词后继续理解
+          userText = ww.remainingText.trim();
+        } else {
+          // 只有唤醒词，没有后续指令
+          send(session, VoiceMessage.wakeupDetected(clientMsgId, ww.wakeWord));
+          send(session, VoiceMessage.assistantFinal(clientMsgId, "我在，你说。"));
+          return;
+        }
 
         // MVP：规则 NLU（后续替换为讯飞星火工具调用）
         NluResult parsed;
