@@ -1,6 +1,7 @@
 # Maven (server)
 server/target/
 server/.m2/
+server/models/
 
 # Android
 android/.gradle/

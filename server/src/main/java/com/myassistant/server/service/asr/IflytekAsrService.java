@@ -24,7 +24,7 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Service;
 
 @Service
-@ConditionalOnProperty(prefix = "myassistant.iflytek", name = "enabled", havingValue = "true")
+@ConditionalOnProperty(prefix = "myassistant.asr", name = "provider", havingValue = "iflytek")
 public class IflytekAsrService implements AsrService {
   private final MyAssistantProperties props;
   private final ObjectMapper om;

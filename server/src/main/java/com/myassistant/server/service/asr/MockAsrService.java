@@ -4,7 +4,7 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Service;
 
 @Service
-@ConditionalOnProperty(prefix = "myassistant.iflytek", name = "enabled", havingValue = "false", matchIfMissing = true)
+@ConditionalOnProperty(prefix = "myassistant.asr", name = "provider", havingValue = "mock", matchIfMissing = true)
 public class MockAsrService implements AsrService {
   @Override
   public String transcribe(byte[] audioBytes, String audioFormat, int sampleRate) {

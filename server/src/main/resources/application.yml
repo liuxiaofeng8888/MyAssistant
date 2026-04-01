@@ -14,19 +14,24 @@ management:
         include: health,info
 
 myassistant:
+  asr:
+    # mock | iflytek | vosk
+    provider: ${MYASSISTANT_ASR_PROVIDER:mock}
+    # Vosk 模型目录（解压后的文件夹路径）
+    vosk-model-path: ${MYASSISTANT_VOSK_MODEL_PATH:models/vosk-model-small-cn-0.22}
+
   auth:
     # MVP: 先用简单 token；后续可换成 JWT/账号体系
     enabled: false
     static-bearer-token: "dev-token"
 
   iflytek:
-    # 讯飞配置占位：先跑通 Mock 模式
-    enabled: false
-    app-id: ""
-    api-key: ""
-    api-secret: ""
+    # 仅当 myassistant.asr.provider=iflytek 时使用
+    app-id: ${MYASSISTANT_IFLYTEK_APP_ID:}
+    api-key: ${MYASSISTANT_IFLYTEK_API_KEY:}
+    api-secret: ${MYASSISTANT_IFLYTEK_API_SECRET:}
     # ASR/大模型等服务的具体 URL 可能随产品线变化，这里先留占位
     # 大模型多语种语音识别（短音频≤60秒）示例：wss://iat.cn-huabei-1.xf-yun.com/v1
-    asr-ws-url: "wss://iat.cn-huabei-1.xf-yun.com/v1"
-    spark-ws-url: ""
+    asr-ws-url: ${MYASSISTANT_IFLYTEK_ASR_WS_URL:wss://iat.cn-huabei-1.xf-yun.com/v1}
+    spark-ws-url: ${MYASSISTANT_IFLYTEK_SPARK_WS_URL:}
 

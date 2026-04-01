@@ -5,7 +5,7 @@
 ### 目录结构
 - `docs/`：需求、架构、接口、测试、隐私等前期文档
 - `android/`：Android 端（Java）工程（待初始化）
-- `server/`：服务端工程（待初始化）
+- `server/`：服务端工程（Spring Boot）
 
 ### 文档入口
 - `docs/PRD_MVP.md`
@@ -15,4 +15,18 @@
 - `docs/PRIVACY_SECURITY.md`
 - `docs/TEST_PLAN.md`
 - `docs/ROADMAP.md`
+
+### 快速开始（服务端）
+在 `server/` 目录：
+
+```bash
+mvn spring-boot:run
+```
+
+如需离线 ASR（CPU），使用 Vosk：
+
+```bash
+cd server
+MYASSISTANT_ASR_PROVIDER=vosk mvn spring-boot:run
+```
 

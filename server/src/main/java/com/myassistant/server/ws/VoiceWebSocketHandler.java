@@ -6,13 +6,19 @@ import com.myassistant.server.service.llm.NluResult;
 import com.myassistant.server.service.llm.NluService;
 import com.myassistant.server.service.tool.ToolDispatcher;
 import com.myassistant.server.service.tool.ToolResult;
+import java.io.ByteArrayInputStream;
+import java.io.DataInputStream;
+import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.nio.ByteBuffer;
+import java.util.Arrays;
 import java.util.Base64;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import org.springframework.stereotype.Component;
 import org.springframework.web.socket.CloseStatus;
+import org.springframework.web.socket.BinaryMessage;
 import org.springframework.web.socket.TextMessage;
 import org.springframework.web.socket.WebSocketSession;
 import org.springframework.web.socket.handler.TextWebSocketHandler;
@@ -91,8 +97,8 @@ public class VoiceWebSocketHandler extends TextWebSocketHandler {
         String clientMsgId = st.currentClientMsgId;
         st.started = false;
 
-        byte[] audioBytes = st.audioBuffer.toByteArray();
-        if (audioBytes.length == 0) {
+        byte[] rawAudioBytes = st.audioBuffer.toByteArray();
+        if (rawAudioBytes.length == 0) {
           send(session, VoiceMessage.error(clientMsgId, st.traceId, "EMPTY_AUDIO", "没有收到音频数据", true));
           return;
         }
@@ -100,7 +106,8 @@ public class VoiceWebSocketHandler extends TextWebSocketHandler {
         // ASR：根据配置使用 Mock 或 讯飞
         String userText;
         try {
-          userText = asr.transcribe(audioBytes, "pcm16", 16000);
+          AudioInput in = decodeWavIfNeeded(rawAudioBytes);
+          userText = asr.transcribe(in.audioBytes, in.audioFormat, in.sampleRate);
         } catch (Exception e) {
           send(session, VoiceMessage.error(clientMsgId, st.traceId, "ASR_FAILED", "语音识别失败: " + e.getMessage(), true));
           return;
@@ -165,6 +172,31 @@ public class VoiceWebSocketHandler extends TextWebSocketHandler {
   }
 
   @Override
+  protected void handleBinaryMessage(WebSocketSession session, BinaryMessage message) {
+    try {
+      VoiceSessionState st = states.get(session.getId());
+      if (st == null) {
+        return;
+      }
+      if (!st.started) {
+        send(session, VoiceMessage.error(null, st.traceId, "BAD_REQUEST", "未 start 就发送 binary 音频", false));
+        return;
+      }
+
+      ByteBuffer payload = message.getPayload();
+      if (!payload.hasRemaining()) {
+        return;
+      }
+
+      byte[] chunk = new byte[payload.remaining()];
+      payload.get(chunk);
+      st.audioBuffer.write(chunk);
+    } catch (Exception ignored) {
+      // Best-effort: binary 音频帧异常不应打断 WS 主流程
+    }
+  }
+
+  @Override
   public void afterConnectionClosed(WebSocketSession session, CloseStatus status) {
     states.remove(session.getId());
   }
@@ -172,6 +204,119 @@ public class VoiceWebSocketHandler extends TextWebSocketHandler {
   private void send(WebSocketSession session, VoiceMessage msg) throws Exception {
     byte[] json = om.writeValueAsBytes(msg);
     session.sendMessage(new TextMessage(new String(json, StandardCharsets.UTF_8), true));
+  }
+
+  private static final class AudioInput {
+    final byte[] audioBytes;
+    final String audioFormat;
+    final int sampleRate;
+
+    private AudioInput(byte[] audioBytes, String audioFormat, int sampleRate) {
+      this.audioBytes = audioBytes;
+      this.audioFormat = audioFormat;
+      this.sampleRate = sampleRate;
+    }
+  }
+
+  /**
+   * 兼容常见客户端直接上传 WAV 文件：
+   * - 若是 WAV(PCM16/单声道)，自动提取 data chunk，返回 pcm16 + wav 内的 sampleRate
+   * - 否则按原逻辑认为是裸 PCM16@16k
+   */
+  private static AudioInput decodeWavIfNeeded(byte[] bytes) throws IOException {
+    if (bytes.length >= 12
+        && bytes[0] == 'R' && bytes[1] == 'I' && bytes[2] == 'F' && bytes[3] == 'F'
+        && bytes[8] == 'W' && bytes[9] == 'A' && bytes[10] == 'V' && bytes[11] == 'E') {
+      return decodeWav(bytes);
+    }
+    return new AudioInput(bytes, "pcm16", 16000);
+  }
+
+  private static AudioInput decodeWav(byte[] wavBytes) throws IOException {
+    try (DataInputStream in = new DataInputStream(new ByteArrayInputStream(wavBytes))) {
+      // RIFF header
+      readFourCC(in); // "RIFF"
+      readU32LE(in);  // file size
+      readFourCC(in); // "WAVE"
+
+      Integer sampleRate = null;
+      Integer bitsPerSample = null;
+      Integer channels = null;
+      byte[] pcmData = null;
+
+      while (in.available() > 0) {
+        String chunkId = readFourCC(in);
+        long chunkSize = readU32LE(in);
+        if (chunkSize < 0 || chunkSize > Integer.MAX_VALUE) {
+          throw new IOException("WAV chunk size invalid: " + chunkSize);
+        }
+
+        if ("fmt ".equals(chunkId)) {
+          int audioFormat = readU16LE(in);
+          int ch = readU16LE(in);
+          int sr = (int) readU32LE(in);
+          readU32LE(in); // byteRate
+          readU16LE(in); // blockAlign
+          int bps = readU16LE(in);
+
+          int remaining = (int) chunkSize - 16;
+          if (remaining > 0) {
+            in.skipBytes(remaining);
+          }
+
+          // PCM = 1
+          if (audioFormat != 1) {
+            throw new IOException("WAV not PCM (audioFormat=" + audioFormat + ")");
+          }
+          sampleRate = sr;
+          bitsPerSample = bps;
+          channels = ch;
+        } else if ("data".equals(chunkId)) {
+          byte[] data = new byte[(int) chunkSize];
+          in.readFully(data);
+          pcmData = data;
+        } else {
+          // skip unknown chunk
+          in.skipBytes((int) chunkSize);
+        }
+
+        // chunks are word-aligned
+        if ((chunkSize & 1) == 1) {
+          in.skipBytes(1);
+        }
+      }
+
+      if (sampleRate == null || bitsPerSample == null || channels == null || pcmData == null) {
+        throw new IOException("WAV missing required chunks");
+      }
+      if (channels != 1) {
+        throw new IOException("WAV must be mono (channels=" + channels + ")");
+      }
+      if (bitsPerSample != 16) {
+        throw new IOException("WAV must be 16-bit PCM (bitsPerSample=" + bitsPerSample + ")");
+      }
+      return new AudioInput(pcmData, "pcm16", sampleRate);
+    }
+  }
+
+  private static String readFourCC(DataInputStream in) throws IOException {
+    byte[] b = new byte[4];
+    in.readFully(b);
+    return new String(b, StandardCharsets.US_ASCII);
+  }
+
+  private static long readU32LE(DataInputStream in) throws IOException {
+    int b0 = in.readUnsignedByte();
+    int b1 = in.readUnsignedByte();
+    int b2 = in.readUnsignedByte();
+    int b3 = in.readUnsignedByte();
+    return ((long) b0) | ((long) b1 << 8) | ((long) b2 << 16) | ((long) b3 << 24);
+  }
+
+  private static int readU16LE(DataInputStream in) throws IOException {
+    int b0 = in.readUnsignedByte();
+    int b1 = in.readUnsignedByte();
+    return b0 | (b1 << 8);
   }
 }
 

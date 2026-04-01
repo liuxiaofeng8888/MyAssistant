@@ -7,14 +7,46 @@ import org.springframework.stereotype.Component;
 @ConfigurationProperties(prefix = "myassistant")
 public class MyAssistantProperties {
   private final Auth auth = new Auth();
+  private final Asr asr = new Asr();
   private final Iflytek iflytek = new Iflytek();
 
   public Auth getAuth() {
     return auth;
   }
 
+  public Asr getAsr() {
+    return asr;
+  }
+
   public Iflytek getIflytek() {
     return iflytek;
+  }
+
+  public static class Asr {
+    /**
+     * mock | iflytek | vosk
+     */
+    private String provider = "mock";
+    /**
+     * Vosk 模型目录路径（例如：/opt/models/vosk-model-cn-0.22）
+     */
+    private String voskModelPath = "";
+
+    public String getProvider() {
+      return provider;
+    }
+
+    public void setProvider(String provider) {
+      this.provider = provider;
+    }
+
+    public String getVoskModelPath() {
+      return voskModelPath;
+    }
+
+    public void setVoskModelPath(String voskModelPath) {
+      this.voskModelPath = voskModelPath;
+    }
   }
 
   public static class Auth {
