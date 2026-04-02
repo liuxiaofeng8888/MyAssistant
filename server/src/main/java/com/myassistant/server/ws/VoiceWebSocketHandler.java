@@ -1,11 +1,13 @@
 package com.myassistant.server.ws;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.myassistant.server.config.MyAssistantProperties;
 import com.myassistant.server.service.asr.AsrService;
 import com.myassistant.server.service.llm.NluResult;
 import com.myassistant.server.service.llm.NluService;
 import com.myassistant.server.service.tool.ToolDispatcher;
 import com.myassistant.server.service.tool.ToolResult;
+import com.myassistant.server.service.wakeup.WakeGrammarRecognizer;
 import com.myassistant.server.service.wakeup.WakeWordResult;
 import com.myassistant.server.service.wakeup.WakeWordService;
 import java.io.ByteArrayInputStream;
@@ -16,8 +18,10 @@ import java.nio.ByteBuffer;
 import java.util.Arrays;
 import java.util.Base64;
 import java.util.Map;
+import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.stereotype.Component;
 import org.springframework.web.socket.CloseStatus;
 import org.springframework.web.socket.BinaryMessage;
@@ -32,15 +36,26 @@ public class VoiceWebSocketHandler extends TextWebSocketHandler {
   private final NluService nlu;
   private final ToolDispatcher tools;
   private final WakeWordService wakeup;
+  private final MyAssistantProperties assistantProps;
+  private final WakeGrammarRecognizer wakeGrammar;
 
   private final ConcurrentHashMap<String, VoiceSessionState> states = new ConcurrentHashMap<>();
 
-  public VoiceWebSocketHandler(ObjectMapper om, AsrService asr, NluService nlu, ToolDispatcher tools, WakeWordService wakeup) {
+  public VoiceWebSocketHandler(
+      ObjectMapper om,
+      AsrService asr,
+      NluService nlu,
+      ToolDispatcher tools,
+      WakeWordService wakeup,
+      MyAssistantProperties assistantProps,
+      ObjectProvider<WakeGrammarRecognizer> wakeGrammarProvider) {
     this.om = om;
     this.asr = asr;
     this.nlu = nlu;
     this.tools = tools;
     this.wakeup = wakeup;
+    this.assistantProps = assistantProps;
+    this.wakeGrammar = wakeGrammarProvider.getIfAvailable();
   }
 
   @Override
@@ -107,10 +122,11 @@ public class VoiceWebSocketHandler extends TextWebSocketHandler {
           return;
         }
 
-        // ASR：根据配置使用 Mock 或 讯飞
+        AudioInput in = decodeWavIfNeeded(rawAudioBytes);
+
+        // 开放域 ASR（联调展示与 NLU 主文本）
         String userText;
         try {
-          AudioInput in = decodeWavIfNeeded(rawAudioBytes);
           userText = asr.transcribe(in.audioBytes, in.audioFormat, in.sampleRate);
         } catch (Exception e) {
           send(session, VoiceMessage.error(clientMsgId, st.traceId, "ASR_FAILED", "语音识别失败: " + e.getMessage(), true));
@@ -118,8 +134,8 @@ public class VoiceWebSocketHandler extends TextWebSocketHandler {
         }
         send(session, VoiceMessage.asrFinal(clientMsgId, userText));
 
-        // 唤醒：检测“嗨 小布”等唤醒词。未唤醒则不进入后续 NLU/工具链。
-        WakeWordResult ww = wakeup.detect(userText);
+        // 唤醒：Vosk 下可走 grammar 专用链路；否则仅文本规则
+        WakeWordResult ww = resolveWake(userText, in);
         if (!ww.awakened) {
           send(session, VoiceMessage.assistantFinal(clientMsgId, "请先说“" + ww.wakeWord + "”唤醒我。"));
           return;
@@ -219,6 +235,20 @@ public class VoiceWebSocketHandler extends TextWebSocketHandler {
   @Override
   public void afterConnectionClosed(WebSocketSession session, CloseStatus status) {
     states.remove(session.getId());
+  }
+
+  private WakeWordResult resolveWake(String userText, AudioInput in) {
+    if (wakeGrammar != null && assistantProps.getWakeup().isEnabled()) {
+      try {
+        Optional<String> g = wakeGrammar.recognizeWake(in.audioBytes, in.audioFormat, in.sampleRate);
+        if (g.isPresent() && !g.get().isBlank()) {
+          return wakeup.resolveAfterGrammarHit(userText);
+        }
+      } catch (Exception ignored) {
+        // 专用链路异常时回落到文本唤醒规则
+      }
+    }
+    return wakeup.detect(userText);
   }
 
   private void send(WebSocketSession session, VoiceMessage msg) throws Exception {

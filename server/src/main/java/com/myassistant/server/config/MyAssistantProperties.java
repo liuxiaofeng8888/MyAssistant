@@ -1,5 +1,7 @@
 package com.myassistant.server.config;
 
+import java.util.ArrayList;
+import java.util.List;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.stereotype.Component;
 
@@ -141,6 +143,14 @@ public class MyAssistantProperties {
      * 唤醒词，默认：嗨 小布（匹配时会忽略空格/常见标点）。
      */
     private String wakeWord = "嗨 小布";
+    /**
+     * ASR 常把唤醒词误识成别的短语；此处列出的别名仅在识别结果<strong>以该别名开头</strong>时视为已唤醒（降低误触发）。
+     */
+    private List<String> wakeAliases = new ArrayList<>();
+    /**
+     * 是否在 Vosk 下启用「grammar 唤醒专用链路」（与开放域 transcribe 并行）。关闭后仅走文本规则匹配。
+     */
+    private boolean dedicatedPath = true;
 
     public boolean isEnabled() {
       return enabled;
@@ -156,6 +166,22 @@ public class MyAssistantProperties {
 
     public void setWakeWord(String wakeWord) {
       this.wakeWord = wakeWord;
+    }
+
+    public List<String> getWakeAliases() {
+      return wakeAliases;
+    }
+
+    public void setWakeAliases(List<String> wakeAliases) {
+      this.wakeAliases = wakeAliases == null ? new ArrayList<>() : wakeAliases;
+    }
+
+    public boolean isDedicatedPath() {
+      return dedicatedPath;
+    }
+
+    public void setDedicatedPath(boolean dedicatedPath) {
+      this.dedicatedPath = dedicatedPath;
     }
   }
 }

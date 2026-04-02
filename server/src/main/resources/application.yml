@@ -23,6 +23,12 @@ myassistant:
   wakeup:
     enabled: ${MYASSISTANT_WAKEUP_ENABLED:true}
     wake-word: ${MYASSISTANT_WAKE_WORD:嗨 小布}
+    # Vosk 下先做 grammar 受限唤醒识别，再走开放域 ASR（需 asr.provider=vosk）
+    dedicated-path: ${MYASSISTANT_WAKEUP_DEDICATED_PATH:true}
+    # 小模型 ASR 对「嗨小布」的常见误识；仅当整句以该前缀开头时算唤醒，可按环境增删
+    wake-aliases:
+      - 一小步
+      - 晓牧
 
   auth:
     # MVP: 先用简单 token；后续可换成 JWT/账号体系

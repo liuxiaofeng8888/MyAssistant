@@ -1,6 +1,9 @@
 package com.myassistant.server.service.wakeup;
 
 import com.myassistant.server.config.MyAssistantProperties;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
 import java.util.Locale;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Service;
@@ -10,6 +13,7 @@ import org.springframework.stereotype.Service;
 public class RuleBasedWakeWordService implements WakeWordService {
   private final String wakeWordNormalized;
   private final String wakeWordDisplay;
+  private final List<String> wakeAliasNormalized;
 
   public RuleBasedWakeWordService(MyAssistantProperties props) {
     String w = props.getWakeup().getWakeWord();
@@ -18,6 +22,22 @@ public class RuleBasedWakeWordService implements WakeWordService {
     }
     this.wakeWordDisplay = w.trim();
     this.wakeWordNormalized = normalizeForMatch(wakeWordDisplay);
+
+    List<String> norm = new ArrayList<>();
+    List<String> aliases = props.getWakeup().getWakeAliases();
+    if (aliases != null) {
+      for (String a : aliases) {
+        if (a == null || a.isBlank()) {
+          continue;
+        }
+        String an = normalizeForMatch(a);
+        if (an.isEmpty() || an.equals(wakeWordNormalized) || norm.contains(an)) {
+          continue;
+        }
+        norm.add(an);
+      }
+    }
+    this.wakeAliasNormalized = Collections.unmodifiableList(norm);
   }
 
   @Override
@@ -29,40 +49,60 @@ public class RuleBasedWakeWordService implements WakeWordService {
 
     String normalized = normalizeForMatch(original);
     int idx = normalized.indexOf(wakeWordNormalized);
-    if (idx < 0) {
-      return WakeWordResult.notAwakened(wakeWordDisplay, original);
+    if (idx >= 0) {
+      String remaining = stripNormalizedPrefixFromOriginal(original, wakeWordNormalized);
+      return WakeWordResult.awakened(wakeWordDisplay, remaining);
     }
 
-    // 仅做最小“剥离”：如果唤醒词出现在开头附近（允许前面有极少噪声），就把它从原文中删掉
-    String remaining = stripWakeWordFromOriginal(original);
-    return WakeWordResult.awakened(wakeWordDisplay, remaining);
+    for (String alias : wakeAliasNormalized) {
+      if (normalized.startsWith(alias)) {
+        String remaining = stripNormalizedPrefixFromOriginal(original, alias);
+        return WakeWordResult.awakened(wakeWordDisplay, remaining);
+      }
+    }
+
+    return WakeWordResult.notAwakened(wakeWordDisplay, original);
   }
 
-  private String stripWakeWordFromOriginal(String original) {
+  @Override
+  public WakeWordResult resolveAfterGrammarHit(String fullAsrText) {
+    String original = fullAsrText == null ? "" : fullAsrText.trim();
+    if (original.isEmpty()) {
+      return WakeWordResult.awakened(wakeWordDisplay, "");
+    }
+    String normalized = normalizeForMatch(original);
+    if (normalized.startsWith(wakeWordNormalized)) {
+      return WakeWordResult.awakened(
+          wakeWordDisplay, stripNormalizedPrefixFromOriginal(original, wakeWordNormalized));
+    }
+    for (String alias : wakeAliasNormalized) {
+      if (normalized.startsWith(alias)) {
+        return WakeWordResult.awakened(
+            wakeWordDisplay, stripNormalizedPrefixFromOriginal(original, alias));
+      }
+    }
+    return WakeWordResult.awakened(wakeWordDisplay, original);
+  }
+
+  private static String stripNormalizedPrefixFromOriginal(String original, String targetNormalized) {
     String o = original;
-    // 常见情况：Vosk/讯飞会输出带空格或逗号
     String n = normalizeForMatch(o);
-    if (!n.startsWith(wakeWordNormalized)) {
-      // 如果不是开头，先不做激进删除，避免误删正文
+    if (!n.startsWith(targetNormalized)) {
       return original.trim();
     }
 
-    // 将原文前缀中可能出现的空格/标点一起去掉
-    // 做法：从原文头开始扫描，累计“匹配字符”直到覆盖 wakeWordNormalized
     int consumed = 0;
     int matched = 0;
-    while (consumed < o.length() && matched < wakeWordNormalized.length()) {
+    while (consumed < o.length() && matched < targetNormalized.length()) {
       char c = o.charAt(consumed);
       String s = String.valueOf(c);
       String nn = normalizeForMatch(s);
       if (!nn.isEmpty()) {
-        // nn 可能包含多字符（例如全角标点被清空，不会走到这里）
-        for (int i = 0; i < nn.length() && matched < wakeWordNormalized.length(); i++) {
+        for (int i = 0; i < nn.length() && matched < targetNormalized.length(); i++) {
           char mc = nn.charAt(i);
-          if (mc == wakeWordNormalized.charAt(matched)) {
+          if (mc == targetNormalized.charAt(matched)) {
             matched++;
           } else {
-            // 不严格对齐：遇到不一致就停止剥离
             return original.trim();
           }
         }
@@ -70,11 +110,10 @@ public class RuleBasedWakeWordService implements WakeWordService {
       consumed++;
     }
 
-    if (matched < wakeWordNormalized.length()) {
+    if (matched < targetNormalized.length()) {
       return original.trim();
     }
 
-    // 继续吃掉紧随其后的分隔符（空格/逗号/顿号/句号等）
     while (consumed < o.length()) {
       char c = o.charAt(consumed);
       if (isSeparator(c)) {
@@ -102,7 +141,6 @@ public class RuleBasedWakeWordService implements WakeWordService {
     String t = s.trim()
         .toLowerCase(Locale.ROOT)
         .replace(" ", "");
-    // 去掉常见中英文标点，提升匹配鲁棒性
     t = t.replace(",", "").replace("，", "")
         .replace(".", "").replace("。", "")
         .replace("、", "")
@@ -113,4 +151,3 @@ public class RuleBasedWakeWordService implements WakeWordService {
     return t;
   }
 }
-

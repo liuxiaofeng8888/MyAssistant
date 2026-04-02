@@ -16,6 +16,15 @@ android/captures/
 *.ap_
 *.dex
 
+# Android signing (do not commit)
+android/**/keystore.properties
+android/**/signature/
+android/**/*.keystore
+android/**/*.jks
+android/**/*.p12
+android/**/*.pk8
+android/app/signing.gradle
+
 # IDE / OS
 .idea/
 *.iml

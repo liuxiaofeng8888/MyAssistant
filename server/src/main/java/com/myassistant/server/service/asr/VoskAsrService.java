@@ -2,10 +2,6 @@ package com.myassistant.server.service.asr;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.myassistant.server.config.MyAssistantProperties;
-import java.io.IOException;
-import java.nio.file.Files;
-import java.nio.file.Path;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Service;
 import org.vosk.Model;
@@ -17,21 +13,9 @@ public class VoskAsrService implements AsrService {
   private final ObjectMapper om;
   private final Model model;
 
-  public VoskAsrService(MyAssistantProperties props, ObjectMapper om) {
+  public VoskAsrService(Model model, ObjectMapper om) {
+    this.model = model;
     this.om = om;
-    String modelPath = normalizePath(props.getAsr().getVoskModelPath());
-    if (modelPath == null || modelPath.isBlank()) {
-      throw new IllegalStateException("未配置 myassistant.asr.vosk-model-path");
-    }
-    Path p = resolveModelPath(modelPath);
-    if (!Files.exists(p) || !Files.isDirectory(p)) {
-      throw new IllegalStateException("Vosk 模型目录不存在: " + modelPath);
-    }
-    try {
-      this.model = new Model(p.toString());
-    } catch (IOException e) {
-      throw new IllegalStateException("加载 Vosk 模型失败: " + modelPath, e);
-    }
   }
 
   @Override
@@ -54,29 +38,6 @@ public class VoskAsrService implements AsrService {
       JsonNode root = om.readTree(json);
       return root.path("text").asText("").trim();
     }
-  }
-
-  private static String normalizePath(String s) {
-    if (s == null) return null;
-    String t = s.trim();
-    if (t.length() >= 2) {
-      if ((t.startsWith("\"") && t.endsWith("\"")) || (t.startsWith("'") && t.endsWith("'"))) {
-        return t.substring(1, t.length() - 1).trim();
-      }
-    }
-    return t;
-  }
-
-  private static Path resolveModelPath(String modelPath) {
-    Path p = Path.of(modelPath);
-    if (p.isAbsolute()) {
-      return p.normalize();
-    }
-    String userDir = System.getProperty("user.dir", "");
-    if (!userDir.isBlank()) {
-      return Path.of(userDir).resolve(p).normalize();
-    }
-    return p.normalize();
   }
 }
 
