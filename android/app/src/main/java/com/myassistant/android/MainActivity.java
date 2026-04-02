@@ -2,11 +2,16 @@ package com.myassistant.android;
 
 import android.Manifest;
 import android.content.pm.PackageManager;
+import android.content.Intent;
+import android.media.AudioAttributes;
+import android.media.AudioManager;
+import android.media.ToneGenerator;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.SystemClock;
 import android.speech.tts.TextToSpeech;
+import android.speech.tts.UtteranceProgressListener;
 import android.view.View;
 import android.widget.Button;
 import android.widget.EditText;
@@ -18,6 +23,8 @@ import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
 import java.util.Locale;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.UUID;
 import com.konovalov.vad.webrtc.Vad;
 import com.konovalov.vad.webrtc.VadWebRTC;
@@ -43,6 +50,7 @@ public class MainActivity extends AppCompatActivity {
   private ScrollView scroll;
   private Button btnConnect;
   private Button btnWake;
+  private Button btnClearLog;
   private EditText serverUrl;
   private FrameLayout vpaContainer;
   private VpaOrbView vpaOrb;
@@ -59,9 +67,15 @@ public class MainActivity extends AppCompatActivity {
 
   private TextToSpeech tts;
   private volatile boolean ttsReady = false;
+  private final Map<String, Runnable> onTtsDone = new ConcurrentHashMap<>();
+  private AudioManager audioManager;
+  private AudioManager.OnAudioFocusChangeListener audioFocusListener;
+  private AudioAttributes ttsAudioAttrs;
+  private ToneGenerator tone;
 
   private VoskKwsService kws;
   private volatile boolean kwsReady = false;
+  private volatile boolean kwsInitFallbackTried = false;
 
   private enum UiState {
     IDLE,
@@ -78,10 +92,25 @@ public class MainActivity extends AppCompatActivity {
     super.onCreate(savedInstanceState);
     setContentView(R.layout.activity_main);
 
+    audioManager = (AudioManager) getSystemService(AUDIO_SERVICE);
+    audioFocusListener = focusChange -> {
+      // no-op: 仅用于请求/释放焦点
+    };
+    ttsAudioAttrs = new AudioAttributes.Builder()
+        .setUsage(AudioAttributes.USAGE_ASSISTANT)
+        .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+        .build();
+    try {
+      tone = new ToneGenerator(AudioManager.STREAM_MUSIC, 80);
+    } catch (Exception ignored) {
+      tone = null;
+    }
+
     logView = findViewById(R.id.logView);
     scroll = findViewById(R.id.scroll);
     btnConnect = findViewById(R.id.btnConnect);
     btnWake = findViewById(R.id.btnWake);
+    btnClearLog = findViewById(R.id.btnClearLog);
     serverUrl = findViewById(R.id.serverUrl);
     vpaContainer = findViewById(R.id.vpaContainer);
     vpaOrb = findViewById(R.id.vpaOrb);
@@ -91,6 +120,9 @@ public class MainActivity extends AppCompatActivity {
     initTts();
     initVad();
     initKws();
+
+    // 启动后尽早申请录音权限，让本地 KWS 能够常驻监听
+    ensureAudioPermission();
 
     wsClient = new VoiceWsClient(new VoiceWsClient.Listener() {
       @Override
@@ -138,6 +170,11 @@ public class MainActivity extends AppCompatActivity {
       onWakeTriggered("manual");
     });
 
+    btnClearLog.setOnClickListener(v -> {
+      logView.setText("");
+      scroll.post(() -> scroll.fullScroll(ScrollView.FOCUS_UP));
+    });
+
     setUiState(UiState.IDLE);
   }
 
@@ -169,11 +206,33 @@ public class MainActivity extends AppCompatActivity {
       public void onError(@NonNull String message, Throwable t) {
         kwsReady = false;
         appendLog(message + (t != null ? (": " + t.getMessage()) : ""));
+
+        // 兜底：有些人把模型放成 assets/model/vosk-model-xxx 的形式（多一层目录）
+        // 代码默认尝试 assets/model 作为模型根；失败后自动改为尝试嵌套目录。
+        if (!kwsInitFallbackTried
+            && message.contains("did you add assets/model")
+            && !message.contains("model/vosk-model-small-cn-0.22")) {
+          kwsInitFallbackTried = true;
+          appendLog("KWS: fallback to assets/model/vosk-model-small-cn-0.22");
+          try {
+            // 异步解包：成功后会触发 onModelReady
+            kws.initModelFromAssets("model/vosk-model-small-cn-0.22");
+          } catch (Exception ignored) {}
+        }
       }
     });
 
     // 默认：assets/model （你需要把 Vosk 模型文件夹放到 android/app/src/main/assets/model）
-    kws.setWakeWords(new String[]{"你好助手", "小助手", "你好小助手", "嗨助手"});
+    // 兼容常见口音/说法差异：同时加入有/无空格版本，避免“嗨 小布”匹配不到
+    kws.setWakeWords(new String[]{
+        "你好助手",
+        "小助手",
+        "你好小助手",
+        "嗨助手",
+        "嗨 小布",
+        "嗨小布",
+        "小布"
+    });
     kws.setCooldownMs(1800);
     kws.initModelFromAssets("model");
   }
@@ -188,11 +247,10 @@ public class MainActivity extends AppCompatActivity {
 
     lastAsr = "";
     setUiState(UiState.AWAKE);
-    speak("你好主人");
-    ui.postDelayed(() -> {
+    speak("你好主人", () -> {
       if (!wsClient.isConnected()) return;
       startRecording();
-    }, 220);
+    });
   }
 
   private void setUiState(UiState s) {
@@ -201,6 +259,7 @@ public class MainActivity extends AppCompatActivity {
       switch (s) {
         case IDLE -> {
           btnWake.setText("点击唤醒");
+          scroll.setVisibility(View.VISIBLE);
           vpaContainer.setVisibility(View.GONE);
           vpaOrb.stop();
           asrTitle.setVisibility(View.GONE);
@@ -209,6 +268,7 @@ public class MainActivity extends AppCompatActivity {
         }
         case AWAKE -> {
           btnWake.setText("取消");
+          scroll.setVisibility(View.GONE);
           vpaContainer.setVisibility(View.VISIBLE);
           vpaOrb.start();
           asrTitle.setVisibility(View.GONE);
@@ -217,6 +277,7 @@ public class MainActivity extends AppCompatActivity {
         }
         case LISTENING -> {
           btnWake.setText("取消");
+          scroll.setVisibility(View.GONE);
           vpaContainer.setVisibility(View.VISIBLE);
           vpaOrb.start();
           asrTitle.setVisibility(View.VISIBLE);
@@ -230,6 +291,7 @@ public class MainActivity extends AppCompatActivity {
         }
         case PROCESSING -> {
           btnWake.setText("取消");
+          scroll.setVisibility(View.GONE);
           vpaContainer.setVisibility(View.VISIBLE);
           vpaOrb.start();
           asrTitle.setVisibility(View.VISIBLE);
@@ -378,6 +440,9 @@ public class MainActivity extends AppCompatActivity {
       if (vad != null) vad.close();
     } catch (Exception ignored) {}
     try {
+      if (tone != null) tone.release();
+    } catch (Exception ignored) {}
+    try {
       if (tts != null) {
         tts.stop();
         tts.shutdown();
@@ -405,20 +470,86 @@ public class MainActivity extends AppCompatActivity {
       if (status == TextToSpeech.SUCCESS) {
         int r = tts.setLanguage(Locale.SIMPLIFIED_CHINESE);
         ttsReady = (r != TextToSpeech.LANG_MISSING_DATA && r != TextToSpeech.LANG_NOT_SUPPORTED);
-        appendLog(ttsReady ? "TTS ready" : "TTS language not supported");
+        if (ttsReady) {
+          appendLog("TTS ready");
+          try {
+            tts.setAudioAttributes(ttsAudioAttrs);
+          } catch (Exception ignored) {}
+        } else {
+          appendLog(r == TextToSpeech.LANG_MISSING_DATA ? "TTS missing data (need install)" : "TTS language not supported");
+          // 尝试引导安装/更新 TTS 语言数据（部分 ROM 需要）
+          try {
+            Intent i = new Intent(TextToSpeech.Engine.ACTION_INSTALL_TTS_DATA);
+            startActivity(i);
+          } catch (Exception ignored) {}
+        }
+        try {
+          tts.setOnUtteranceProgressListener(new UtteranceProgressListener() {
+            @Override
+            public void onStart(String utteranceId) {}
+
+            @Override
+            public void onDone(String utteranceId) {
+              Runnable r = onTtsDone.remove(utteranceId);
+              if (r != null) ui.post(r);
+            }
+
+            @Override
+            public void onError(String utteranceId) {
+              Runnable r = onTtsDone.remove(utteranceId);
+              if (r != null) ui.post(r);
+            }
+          });
+        } catch (Exception ignored) {}
       } else {
         ttsReady = false;
         appendLog("TTS init failed: " + status);
+        // 某些车机 ROM 默认绑定的 TTS Service 不存在，跳系统 TTS 设置让用户切换引擎
+        try {
+          // 兼容做法：部分系统没有公开常量，使用 settings action 字符串
+          Intent i = new Intent("com.android.settings.TTS_SETTINGS");
+          startActivity(i);
+        } catch (Exception ignored) {}
       }
     });
   }
 
+  private void playWakeBeep() {
+    try {
+      if (tone != null) tone.startTone(ToneGenerator.TONE_PROP_BEEP, 160);
+    } catch (Exception ignored) {}
+  }
+
   private void speak(String text) {
-    if (!ttsReady || tts == null) return;
-    if (text == null) return;
+    speak(text, null);
+  }
+
+  private void speak(String text, Runnable afterDone) {
+    if (!ttsReady || tts == null) {
+      appendLog("speak skipped (tts not ready)");
+      playWakeBeep();
+      if (afterDone != null) ui.post(afterDone);
+      return;
+    }
+    if (text == null) {
+      if (afterDone != null) ui.post(afterDone);
+      return;
+    }
     String t = text.trim();
-    if (t.isEmpty()) return;
+    if (t.isEmpty()) {
+      if (afterDone != null) ui.post(afterDone);
+      return;
+    }
+
+    // 请求短暂音频焦点，避免被其它音频/录音链路压制
+    try {
+      if (audioManager != null) {
+        audioManager.requestAudioFocus(audioFocusListener, AudioManager.STREAM_MUSIC, AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK);
+      }
+    } catch (Exception ignored) {}
+
     String utteranceId = "utt-" + UUID.randomUUID();
+    if (afterDone != null) onTtsDone.put(utteranceId, afterDone);
     tts.speak(t, TextToSpeech.QUEUE_FLUSH, null, utteranceId);
   }
 

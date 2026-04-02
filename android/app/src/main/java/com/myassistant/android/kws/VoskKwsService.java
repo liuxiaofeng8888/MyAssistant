@@ -192,10 +192,11 @@ public final class VoskKwsService {
   }
 
   private static @Nullable String matchWakeWord(@NonNull String text, @NonNull String[] words) {
-    String norm = text.trim().toLowerCase(Locale.ROOT);
+    // 识别结果可能包含/不包含空格差异（例如“嗨小布” vs “嗨 小布”），这里做空白归一化
+    String norm = text.trim().toLowerCase(Locale.ROOT).replaceAll("\\s+", "");
     for (String w : words) {
       if (w == null) continue;
-      String wn = w.trim().toLowerCase(Locale.ROOT);
+      String wn = w.trim().toLowerCase(Locale.ROOT).replaceAll("\\s+", "");
       if (wn.isEmpty()) continue;
       if (norm.equals(wn)) return w.trim();
       if (norm.contains(wn)) return w.trim();

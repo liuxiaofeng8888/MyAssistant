@@ -6,6 +6,10 @@ android {
     namespace 'com.myassistant.android'
     compileSdk 34
 
+    buildFeatures {
+        buildConfig true
+    }
+
     defaultConfig {
         applicationId "com.myassistant.android"
         minSdk 24
@@ -28,6 +32,12 @@ android {
         sourceCompatibility JavaVersion.VERSION_17
         targetCompatibility JavaVersion.VERSION_17
     }
+}
+
+// Local-only signing/flavors (copied from VoiceDemo). Keep this file git-ignored.
+def localSigning = rootProject.file("app/signing.gradle")
+if (localSigning.exists()) {
+    apply from: localSigning
 }
 
 dependencies {
