@@ -54,12 +54,20 @@ public class AudioRecorder {
 
     thread = new Thread(() -> {
       Process.setThreadPriority(Process.THREAD_PRIORITY_AUDIO);
-      byte[] buf = new byte[chunkSizeBytes];
+      // AudioRecord.read() 可能返回小于请求长度的字节数。
+      // 为了让上层 VAD/WS 发送链路稳定工作，这里累积到固定帧大小再回调。
+      byte[] frame = new byte[chunkSizeBytes];
+      int filled = 0;
       try {
         while (running.get()) {
-          int n = record.read(buf, 0, buf.length);
+          int n = record.read(frame, filled, frame.length - filled);
           if (n > 0) {
-            cb.onAudioChunk(buf, n);
+            filled += n;
+            if (filled == frame.length) {
+              cb.onAudioChunk(frame, frame.length);
+              frame = new byte[chunkSizeBytes];
+              filled = 0;
+            }
           } else {
             cb.onError(new RuntimeException("AudioRecord read failed: " + n));
             break;

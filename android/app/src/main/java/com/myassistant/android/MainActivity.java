@@ -222,19 +222,20 @@ public class MainActivity extends AppCompatActivity {
       }
     });
 
-    // 默认：assets/model （你需要把 Vosk 模型文件夹放到 android/app/src/main/assets/model）
-    // 兼容常见口音/说法差异：同时加入有/无空格版本，避免“嗨 小布”匹配不到
+    // 默认：assets/model/vosk-model-small-cn-0.22
+    // （把完整的模型目录放到 android/app/src/main/assets/model/vosk-model-small-cn-0.22）
+    // 兼容常见口音/说法差异：同时加入有/无空格版本，避免“嗨 小奇”匹配不到
     kws.setWakeWords(new String[]{
         "你好助手",
         "小助手",
         "你好小助手",
         "嗨助手",
-        "嗨 小布",
-        "嗨小布",
-        "小布"
+        "嗨 小奇",
+        "嗨小奇",
+        "小奇"
     });
     kws.setCooldownMs(1800);
-    kws.initModelFromAssets("model");
+    kws.initModelFromAssets("model/vosk-model-small-cn-0.22");
   }
 
   private void onWakeTriggered(@NonNull String source) {
@@ -340,6 +341,15 @@ public class MainActivity extends AppCompatActivity {
 
     stopTts();
     setUiState(UiState.LISTENING);
+
+    // 避免与本地 KWS 同时占用麦克风（部分设备不支持两个 AudioRecord 并发）
+    try {
+      if (kws != null && kws.isRunning()) {
+        appendLog("KWS: pause during recording");
+        kws.stop();
+      }
+    } catch (Exception ignored) {}
+
     recorder.start(CHUNK_SIZE, new AudioRecorder.Callback() {
       @Override
       public void onAudioChunk(byte[] chunk, int len) {
@@ -386,7 +396,19 @@ public class MainActivity extends AppCompatActivity {
 
       @Override
       public void onStopped() {
-        // no-op
+        // 录音结束后恢复 KWS 常驻监听
+        ui.post(() -> {
+          try {
+            if (kws != null && kwsReady
+                && ContextCompat.checkSelfPermission(MainActivity.this, Manifest.permission.RECORD_AUDIO)
+                == PackageManager.PERMISSION_GRANTED) {
+              if (!kws.isRunning()) {
+                appendLog("KWS: resume after recording");
+                kws.start();
+              }
+            }
+          } catch (Exception ignored) {}
+        });
       }
     });
 

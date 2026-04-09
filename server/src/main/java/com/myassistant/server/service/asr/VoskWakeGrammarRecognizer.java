@@ -41,7 +41,7 @@ public class VoskWakeGrammarRecognizer implements WakeGrammarRecognizer {
       }
     }
     if (phrases.isEmpty()) {
-      phrases.add("嗨小布");
+      phrases.add("嗨小奇");
     }
     List<String> list = new ArrayList<>(phrases);
     return om.writeValueAsString(list);

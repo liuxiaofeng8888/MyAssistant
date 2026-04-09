@@ -18,7 +18,7 @@ public class RuleBasedWakeWordService implements WakeWordService {
   public RuleBasedWakeWordService(MyAssistantProperties props) {
     String w = props.getWakeup().getWakeWord();
     if (w == null || w.isBlank()) {
-      w = "嗨小布";
+      w = "嗨小奇";
     }
     this.wakeWordDisplay = w.trim();
     this.wakeWordNormalized = normalizeForMatch(wakeWordDisplay);

@@ -11,7 +11,7 @@ public class NoopWakeWordService implements WakeWordService {
 
   public NoopWakeWordService(MyAssistantProperties props) {
     String w = props.getWakeup().getWakeWord();
-    this.wakeWord = (w == null || w.isBlank()) ? "嗨小布" : w.trim();
+    this.wakeWord = (w == null || w.isBlank()) ? "嗨小奇" : w.trim();
   }
 
   @Override

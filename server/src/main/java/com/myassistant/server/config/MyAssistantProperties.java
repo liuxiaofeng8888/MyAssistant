@@ -140,9 +140,9 @@ public class MyAssistantProperties {
      */
     private boolean enabled = true;
     /**
-     * 唤醒词，默认：嗨 小布（匹配时会忽略空格/常见标点）。
+     * 唤醒词，默认：嗨 小奇（匹配时会忽略空格/常见标点）。
      */
-    private String wakeWord = "嗨 小布";
+    private String wakeWord = "嗨 小奇";
     /**
      * ASR 常把唤醒词误识成别的短语；此处列出的别名仅在识别结果<strong>以该别名开头</strong>时视为已唤醒（降低误触发）。
      */

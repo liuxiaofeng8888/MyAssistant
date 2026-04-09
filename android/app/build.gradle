@@ -32,6 +32,21 @@ android {
         sourceCompatibility JavaVersion.VERSION_17
         targetCompatibility JavaVersion.VERSION_17
     }
+
+    // Vosk 模型文件在 assets 中如果被 aapt 压缩，StorageService.unpack / Model 加载可能失败。
+    // 这里显式声明不压缩常见的 Vosk/Kaldi 模型扩展名。
+    androidResources {
+        noCompress += [
+                "conf",
+                "mdl",
+                "fst",
+                "int",
+                "mat",
+                "ie",
+                "dubm",
+                "stats"
+        ]
+    }
 }
 
 // Local-only signing/flavors (copied from VoiceDemo). Keep this file git-ignored.

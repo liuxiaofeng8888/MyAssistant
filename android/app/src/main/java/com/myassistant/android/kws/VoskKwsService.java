@@ -43,6 +43,7 @@ public final class VoskKwsService {
 
   private @Nullable Model model;
   private @Nullable Thread thread;
+  private volatile @Nullable AudioRecord recordRef;
 
   private volatile long lastWakeAtMs = 0L;
   private volatile long cooldownMs = 1800L;
@@ -99,6 +100,17 @@ public final class VoskKwsService {
 
   public void stop() {
     running.set(false);
+    // 尽量快速释放麦克风，避免与其它录音链路互相阻塞
+    try {
+      AudioRecord r = recordRef;
+      if (r != null) {
+        try { r.stop(); } catch (Exception ignored) {}
+      }
+    } catch (Exception ignored) {}
+    try {
+      Thread t = thread;
+      if (t != null) t.interrupt();
+    } catch (Exception ignored) {}
   }
 
   private void loop() {
@@ -117,6 +129,7 @@ public final class VoskKwsService {
           FORMAT,
           bufSize
       );
+      recordRef = record;
 
       if (record.getState() != AudioRecord.STATE_INITIALIZED) {
         throw new IllegalStateException("AudioRecord init failed");
@@ -155,6 +168,7 @@ public final class VoskKwsService {
           record.release();
         }
       } catch (Exception ignored) {}
+      recordRef = null;
       try {
         if (recognizer != null) recognizer.close();
       } catch (Exception ignored) {}
@@ -192,7 +206,7 @@ public final class VoskKwsService {
   }
 
   private static @Nullable String matchWakeWord(@NonNull String text, @NonNull String[] words) {
-    // 识别结果可能包含/不包含空格差异（例如“嗨小布” vs “嗨 小布”），这里做空白归一化
+    // 识别结果可能包含/不包含空格差异（例如“嗨小奇” vs “嗨 小奇”），这里做空白归一化
     String norm = text.trim().toLowerCase(Locale.ROOT).replaceAll("\\s+", "");
     for (String w : words) {
       if (w == null) continue;

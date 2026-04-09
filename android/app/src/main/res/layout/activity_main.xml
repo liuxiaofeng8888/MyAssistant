@@ -22,7 +22,7 @@
         android:layout_width="0dp"
         android:layout_height="wrap_content"
         android:layout_marginTop="8dp"
-        android:text="模拟器：ws://10.0.2.2:8080… ｜ 车机/真机：改为电脑局域网 IP（与车同网）"
+        android:text="模拟器：ws://10.0.2.2:8081… ｜ 车机/真机：改为电脑局域网 IP（与车同网）"
         android:textSize="12sp"
         app:layout_constraintTop_toBottomOf="@id/title"
         app:layout_constraintStart_toStartOf="parent"
@@ -35,7 +35,7 @@
         android:layout_marginTop="12dp"
         android:hint="本机开发机 IP 会变，连不上时用 ip addr 再查"
         android:inputType="textUri"
-        android:text="ws://10.177.3.163:8080/v1/voice/ws"
+        android:text="ws://10.177.78.213:8081/v1/voice/ws"
         app:layout_constraintTop_toBottomOf="@id/subtitle"
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintEnd_toEndOf="parent"/>

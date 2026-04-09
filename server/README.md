@@ -34,6 +34,13 @@ MYASSISTANT_VOSK_MODEL_PATH=/abs/path/to/vosk-model \
 mvn spring-boot:run
 ```
 
+云端部署时通常需要把模型目录挂载进容器/机器，并通过环境变量显式指定（避免工作目录不同导致相对路径找不到）：
+
+```bash
+export MYASSISTANT_ASR_PROVIDER=vosk
+export MYASSISTANT_VOSK_MODEL_PATH=/models/vosk-model-small-cn-0.22
+```
+
 #### 2) 使用讯飞（在线）
 
 ```bash
