@@ -10,6 +10,7 @@ android/*.iml
 android/.idea/
 android/.cxx/
 android/captures/
+android/.jdk/
 *.apk
 *.aab
 *.ap_

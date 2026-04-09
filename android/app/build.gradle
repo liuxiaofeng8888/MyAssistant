@@ -2,6 +2,8 @@ plugins {
     id 'com.android.application'
 }
 
+def buildTimestamp = new java.text.SimpleDateFormat("yyyyMMdd_HHmm").format(new Date())
+
 android {
     namespace 'com.myassistant.android'
     compileSdk 34
@@ -46,6 +48,14 @@ android {
                 "dubm",
                 "stats"
         ]
+    }
+}
+
+androidComponents {
+    onVariants(selector().all()) { variant ->
+        variant.outputs.each { output ->
+            output.outputFileName.set("MyAssistant-${variant.name}-${buildTimestamp}.apk")
+        }
     }
 }
 
