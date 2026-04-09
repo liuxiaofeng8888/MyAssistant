@@ -48,6 +48,10 @@ public final class VoskKwsService {
   private volatile long lastWakeAtMs = 0L;
   private volatile long cooldownMs = 1800L;
   private volatile String[] wakeWords = new String[]{"你好助手", "小助手", "你好小助手", "嗨助手"};
+  private volatile long lastDebugLogAtMs = 0L;
+  // 两段式唤醒容错：比如用户说“嗨…（停顿）…小奇”，模型可能先给出“嗨”，后给出“小奇”
+  private volatile long pendingHiAtMs = 0L;
+  private static final long PENDING_HI_WINDOW_MS = 1300L;
 
   public VoskKwsService(@NonNull Context context, @NonNull Listener listener) {
     this.app = context.getApplicationContext();
@@ -144,19 +148,49 @@ public final class VoskKwsService {
         if (n <= 0) continue;
 
         boolean isFinal = recognizer.acceptWaveForm(buf, n);
+        // 允许用 partial 做“严格匹配/前缀匹配”来提升唤醒及时性；
+        // 仍避免 contains 这种容易误唤醒的规则。
         String j = isFinal ? recognizer.getResult() : recognizer.getPartialResult();
         String text = extractText(j);
         if (text == null || text.isEmpty()) continue;
+
+        // debug：节流打印当前识别到的文本，便于排查“没命中”还是“没识别出来”
+        long nowMs = android.os.SystemClock.elapsedRealtime();
+        if (nowMs - lastDebugLogAtMs >= 1200) {
+          lastDebugLogAtMs = nowMs;
+          log("Vosk: kws text(" + (isFinal ? "final" : "partial") + ")=" + text);
+        }
+
+        // 归一化后做两段式容错
+        String norm = text.trim().toLowerCase(Locale.ROOT).replaceAll("\\s+", "");
+        if ("嗨".equals(norm)) {
+          pendingHiAtMs = nowMs;
+          continue;
+        }
+        if ("小奇".equals(norm) && pendingHiAtMs > 0 && (nowMs - pendingHiAtMs) <= PENDING_HI_WINDOW_MS) {
+          pendingHiAtMs = 0L;
+          long now = nowMs;
+          if (now - lastWakeAtMs < cooldownMs) continue;
+          lastWakeAtMs = now;
+          String finalHit = "嗨小奇";
+          log("Vosk: kws hit=" + finalHit + " (two-stage)");
+          ui.post(() -> listener.onWakeWord(finalHit));
+          continue;
+        }
+        if (pendingHiAtMs > 0 && (nowMs - pendingHiAtMs) > PENDING_HI_WINDOW_MS) {
+          pendingHiAtMs = 0L;
+        }
 
         // grammar 限制下，text 一般就是命中的词（也可能带空格/大小写差异）
         String hit = matchWakeWord(text, wakeWords);
         if (hit == null) continue;
 
-        long now = android.os.SystemClock.elapsedRealtime();
+        long now = nowMs;
         if (now - lastWakeAtMs < cooldownMs) continue;
         lastWakeAtMs = now;
 
         String finalHit = hit;
+        log("Vosk: kws hit=" + finalHit);
         ui.post(() -> listener.onWakeWord(finalHit));
       }
     } catch (Exception e) {
@@ -212,8 +246,13 @@ public final class VoskKwsService {
       if (w == null) continue;
       String wn = w.trim().toLowerCase(Locale.ROOT).replaceAll("\\s+", "");
       if (wn.isEmpty()) continue;
+      // 仅等值匹配，避免短词（如“小奇”）在其它文本中“被包含”导致误唤醒
       if (norm.equals(wn)) return w.trim();
-      if (norm.contains(wn)) return w.trim();
+      // 连读场景（如“⼩奇打开…”）时，partial 可能会带后续字符：允许前缀命中
+      if (norm.startsWith(wn)) return w.trim();
+      // 另一类常见情况：partial 只跑出前几个字（例如一直显示“嗨”或“嗨小”）
+      // 这里允许“唤醒词以 partial 为前缀”时提前命中，但要求 partial 至少 2 个字，避免单字误唤醒。
+      if (wn.startsWith(norm) && norm.length() >= 2) return w.trim();
     }
     return null;
   }

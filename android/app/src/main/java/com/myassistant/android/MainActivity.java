@@ -12,16 +12,18 @@ import android.os.Looper;
 import android.os.SystemClock;
 import android.speech.tts.TextToSpeech;
 import android.speech.tts.UtteranceProgressListener;
+import android.view.Gravity;
 import android.view.View;
+import android.view.WindowManager;
 import android.widget.Button;
 import android.widget.EditText;
-import android.widget.FrameLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
 import androidx.annotation.NonNull;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
+import java.util.ArrayDeque;
 import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -32,8 +34,6 @@ import com.konovalov.vad.webrtc.config.FrameSize;
 import com.konovalov.vad.webrtc.config.Mode;
 import com.konovalov.vad.webrtc.config.SampleRate;
 import com.myassistant.android.kws.VoskKwsService;
-import com.myassistant.android.ui.ResultOverlayDialog;
-import com.myassistant.android.ui.TypewriterTextView;
 import com.myassistant.android.ui.VpaOrbView;
 import org.json.JSONObject;
 
@@ -43,19 +43,21 @@ public class MainActivity extends AppCompatActivity {
   // AudioRecorder.read 是按字节读 PCM16，因此 320 samples = 640 bytes
   private static final int CHUNK_SIZE = 640;
   private static final long VAD_SILENCE_STOP_MS = 900; // 连续静音这么久就自动 stop
+  // 预留一点点 pre-roll，降低 VAD 裁掉开头导致的识别不准
+  private static final int PREROLL_FRAMES = 12; // 12 * 20ms ≈ 240ms（CHUNK_SIZE=320 samples）
 
   private final Handler ui = new Handler(Looper.getMainLooper());
 
   private TextView logView;
   private ScrollView scroll;
+  private TextView asrView;
   private Button btnConnect;
   private Button btnWake;
   private Button btnClearLog;
   private EditText serverUrl;
-  private FrameLayout vpaContainer;
-  private VpaOrbView vpaOrb;
-  private TextView asrTitle;
-  private TypewriterTextView asrText;
+  private @NonNull WindowManager windowManager;
+  private @NonNull VpaOrbView floatOrb;
+  private volatile boolean floatOrbAttached = false;
 
   private VoiceWsClient wsClient;
   private final AudioRecorder recorder = new AudioRecorder();
@@ -92,6 +94,9 @@ public class MainActivity extends AppCompatActivity {
     super.onCreate(savedInstanceState);
     setContentView(R.layout.activity_main);
 
+    windowManager = (WindowManager) getSystemService(WINDOW_SERVICE);
+    floatOrb = new VpaOrbView(this);
+
     audioManager = (AudioManager) getSystemService(AUDIO_SERVICE);
     audioFocusListener = focusChange -> {
       // no-op: 仅用于请求/释放焦点
@@ -108,14 +113,11 @@ public class MainActivity extends AppCompatActivity {
 
     logView = findViewById(R.id.logView);
     scroll = findViewById(R.id.scroll);
+    asrView = findViewById(R.id.asrView);
     btnConnect = findViewById(R.id.btnConnect);
     btnWake = findViewById(R.id.btnWake);
     btnClearLog = findViewById(R.id.btnClearLog);
     serverUrl = findViewById(R.id.serverUrl);
-    vpaContainer = findViewById(R.id.vpaContainer);
-    vpaOrb = findViewById(R.id.vpaOrb);
-    asrTitle = findViewById(R.id.asrTitle);
-    asrText = findViewById(R.id.asrText);
 
     initTts();
     initVad();
@@ -142,6 +144,22 @@ public class MainActivity extends AppCompatActivity {
           btnConnect.setText(connected ? "断开" : "连接");
           btnWake.setEnabled(connected);
         });
+        // 兜底：连接状态变化后确保 KWS 处于常驻监听（避免某些异常路径 stop 后未恢复）
+        if (connected) {
+          ui.post(() -> {
+            try {
+              if (!recording
+                  && kws != null
+                  && kwsReady
+                  && ContextCompat.checkSelfPermission(MainActivity.this, Manifest.permission.RECORD_AUDIO)
+                  == PackageManager.PERMISSION_GRANTED
+                  && !kws.isRunning()) {
+                appendLog("KWS: start on connected");
+                kws.start();
+              }
+            } catch (Exception ignored) {}
+          });
+        }
       }
     });
 
@@ -246,6 +264,14 @@ public class MainActivity extends AppCompatActivity {
     }
     if (recording) return;
 
+    // 唤醒后立刻暂停 KWS，避免 TTS 回放/环境噪声导致连续误唤醒
+    try {
+      if (kws != null && kws.isRunning()) {
+        appendLog("KWS: pause on wake");
+        kws.stop();
+      }
+    } catch (Exception ignored) {}
+
     lastAsr = "";
     setUiState(UiState.AWAKE);
     speak("你好主人", () -> {
@@ -261,47 +287,70 @@ public class MainActivity extends AppCompatActivity {
         case IDLE -> {
           btnWake.setText("点击唤醒");
           scroll.setVisibility(View.VISIBLE);
-          vpaContainer.setVisibility(View.GONE);
-          vpaOrb.stop();
-          asrTitle.setVisibility(View.GONE);
-          asrText.setVisibility(View.GONE);
-          asrText.stopAll();
+          hideFloatOrb();
         }
         case AWAKE -> {
           btnWake.setText("取消");
-          scroll.setVisibility(View.GONE);
-          vpaContainer.setVisibility(View.VISIBLE);
-          vpaOrb.start();
-          asrTitle.setVisibility(View.GONE);
-          asrText.setVisibility(View.GONE);
-          asrText.stopAll();
+          scroll.setVisibility(View.VISIBLE);
+          showFloatOrb();
         }
         case LISTENING -> {
           btnWake.setText("取消");
-          scroll.setVisibility(View.GONE);
-          vpaContainer.setVisibility(View.VISIBLE);
-          vpaOrb.start();
-          asrTitle.setVisibility(View.VISIBLE);
-          asrTitle.setText("识别中");
-          asrText.setVisibility(View.VISIBLE);
-          if (lastAsr == null || lastAsr.isEmpty()) {
-            asrText.startDots(220);
-          } else {
-            asrText.setTextImmediate(lastAsr);
-          }
+          scroll.setVisibility(View.VISIBLE);
+          showFloatOrb();
         }
         case PROCESSING -> {
           btnWake.setText("取消");
-          scroll.setVisibility(View.GONE);
-          vpaContainer.setVisibility(View.VISIBLE);
-          vpaOrb.start();
-          asrTitle.setVisibility(View.VISIBLE);
-          asrTitle.setText("思考中");
-          asrText.setVisibility(View.VISIBLE);
-          asrText.startDots(260);
+          scroll.setVisibility(View.VISIBLE);
+          showFloatOrb();
         }
       }
     });
+  }
+
+  private void showFloatOrb() {
+    try {
+      if (floatOrbAttached) {
+        floatOrb.start();
+        return;
+      }
+
+      int size = dp(120);
+      WindowManager.LayoutParams lp = new WindowManager.LayoutParams(
+          size,
+          size,
+          WindowManager.LayoutParams.TYPE_APPLICATION_PANEL,
+          WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+              | WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL
+              | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+          android.graphics.PixelFormat.TRANSLUCENT
+      );
+      lp.gravity = Gravity.TOP | Gravity.CENTER_HORIZONTAL;
+      lp.y = dp(18);
+
+      windowManager.addView(floatOrb, lp);
+      floatOrbAttached = true;
+      floatOrb.start();
+    } catch (Exception e) {
+      appendLog("showFloatOrb failed: " + e.getMessage());
+    }
+  }
+
+  private void hideFloatOrb() {
+    try {
+      floatOrb.stop();
+    } catch (Exception ignored) {}
+    try {
+      if (floatOrbAttached) {
+        windowManager.removeViewImmediate(floatOrb);
+        floatOrbAttached = false;
+      }
+    } catch (Exception ignored) {}
+  }
+
+  private int dp(int v) {
+    float d = getResources().getDisplayMetrics().density;
+    return Math.round(v * d);
   }
 
   private void initVad() {
@@ -351,6 +400,7 @@ public class MainActivity extends AppCompatActivity {
     } catch (Exception ignored) {}
 
     recorder.start(CHUNK_SIZE, new AudioRecorder.Callback() {
+      private final ArrayDeque<byte[]> preRoll = new ArrayDeque<>();
       @Override
       public void onAudioChunk(byte[] chunk, int len) {
         long now = SystemClock.elapsedRealtime();
@@ -374,9 +424,23 @@ public class MainActivity extends AppCompatActivity {
             wsClient.startTurn();
             turnStarted = true;
             appendLog("VAD: speech start -> startTurn()");
+            // 把 pre-roll 帧先补发，减少“吃掉第一个字”的概率
+            while (!preRoll.isEmpty()) {
+              byte[] f = preRoll.removeFirst();
+              wsClient.sendAudio(f, f.length);
+            }
           }
           wsClient.sendAudio(chunk, len);
           return;
+        }
+
+        // 未开始说话时：积累少量 pre-roll
+        if (!turnStarted) {
+          if (len == CHUNK_SIZE) {
+            // chunk 来自 AudioRecorder 每次新分配的 frame，这里直接缓存引用即可
+            preRoll.addLast(chunk);
+            while (preRoll.size() > PREROLL_FRAMES) preRoll.removeFirst();
+          }
         }
 
         // 静音：如果已经开始过 turn，则静音超时后自动 stop 并结束录音
@@ -449,6 +513,9 @@ public class MainActivity extends AppCompatActivity {
   @Override
   protected void onDestroy() {
     super.onDestroy();
+    try {
+      hideFloatOrb();
+    } catch (Exception ignored) {}
     try {
       recorder.stop();
     } catch (Exception ignored) {}
@@ -587,37 +654,43 @@ public class MainActivity extends AppCompatActivity {
       if ("asr_partial".equals(type) || "asr_interim".equals(type)) {
         String text = json.optString("text", "");
         lastAsr = text;
-        if (uiState == UiState.LISTENING) {
-          ui.post(() -> asrText.setTextImmediate(text));
-        }
+        updateAsrView(text);
         return;
       }
       if ("asr_final".equals(type)) {
         String text = json.optString("text", "");
         lastAsr = text;
-        if (uiState == UiState.LISTENING || uiState == UiState.PROCESSING) {
-          ui.post(() -> {
-            asrTitle.setVisibility(TextView.VISIBLE);
-            asrTitle.setText("你说的是");
-            asrText.setVisibility(TextView.VISIBLE);
-            asrText.typeTo(text, 18, 0);
-          });
-        }
+        updateAsrView(text);
+        return;
+      }
+      if ("tool_call".equals(type)) {
+        String name = json.optString("name", "");
+        appendLog("NLU(tool_call): " + (name == null || name.isEmpty() ? "(unknown)" : name));
+        return;
+      }
+      if ("tool_result".equals(type)) {
+        String name = json.optString("name", "");
+        boolean ok = json.optBoolean("ok", false);
+        appendLog("RESULT(tool_result): " + (name == null || name.isEmpty() ? "(unknown)" : name) + " ok=" + ok);
+        return;
+      }
+      if ("wakeup_detected".equals(type)) {
+        String text = json.optString("text", "");
+        appendLog("NLU(wakeup_detected): " + text);
         return;
       }
       if ("assistant_final".equals(type)) {
         String text = json.optString("text", "");
-        ui.post(() -> {
-          try {
-            new ResultOverlayDialog(this, text == null ? "" : text).show();
-          } catch (Exception e) {
-            appendLog("show result dialog failed: " + e.getMessage());
-          }
-          setUiState(UiState.IDLE);
-        });
-        speak(text);
+        appendLog("RESULT(assistant_final): " + (text == null ? "" : text));
+        // UI 仅展示 ASR：不再弹出结果对话框，也不做 TTS 播报
+        ui.post(() -> setUiState(UiState.IDLE));
       }
     } catch (Exception ignored) {}
+  }
+
+  private void updateAsrView(String text) {
+    String t = text == null ? "" : text.trim();
+    ui.post(() -> asrView.setText(t.isEmpty() ? "" : ("ASR: " + t)));
   }
 }
 
