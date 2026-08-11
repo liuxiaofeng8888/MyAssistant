@@ -1,6 +1,7 @@
 package com.myassistant.android;
 
 import android.util.Base64;
+import androidx.annotation.NonNull;
 import java.util.UUID;
 import java.util.concurrent.TimeUnit;
 import okhttp3.OkHttpClient;
@@ -147,6 +148,13 @@ public class VoiceWsClient {
     ws.send(j.toString());
     log(">> cancel");
     currentClientMsgId = null;
+  }
+
+  /** 发送原始 JSON 字符串（供多模态等扩展模块使用） */
+  public void sendRaw(@NonNull String json) {
+    if (ws == null) return;
+    ws.send(json);
+    log(">> raw: " + json);
   }
 
   private void log(String s) {

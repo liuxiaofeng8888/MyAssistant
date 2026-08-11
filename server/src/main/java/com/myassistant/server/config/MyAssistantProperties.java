@@ -12,6 +12,7 @@ public class MyAssistantProperties {
   private final Asr asr = new Asr();
   private final Iflytek iflytek = new Iflytek();
   private final Wakeup wakeup = new Wakeup();
+  private final Vlm vlm = new Vlm();
 
   public Auth getAuth() {
     return auth;
@@ -27,6 +28,55 @@ public class MyAssistantProperties {
 
   public Wakeup getWakeup() {
     return wakeup;
+  }
+
+  public Vlm getVlm() {
+    return vlm;
+  }
+
+  // ==================== VLM 配置 ====================
+
+  public static class Vlm {
+    /** mock | openai | qwen */
+    private String provider = "mock";
+    /** API 端点 URL */
+    private String apiUrl = "";
+    /** API Key */
+    private String apiKey = "";
+    /** 模型名称 */
+    private String model = "";
+    /** 最大输出 token 数 */
+    private int maxTokens = 1024;
+    /** 温度参数 (0.0~2.0) */
+    private double temperature = 0.7;
+    /** 图片最大分辨率限制（长边 px），超过则服务端压缩。0 表示不限制 */
+    private int maxImageSize = 2048;
+    /** 单次请求最大图片数 */
+    private int maxImages = 5;
+
+    public String getProvider() { return provider; }
+    public void setProvider(String provider) { this.provider = provider; }
+
+    public String getApiUrl() { return apiUrl; }
+    public void setApiUrl(String apiUrl) { this.apiUrl = apiUrl; }
+
+    public String getApiKey() { return apiKey; }
+    public void setApiKey(String apiKey) { this.apiKey = apiKey; }
+
+    public String getModel() { return model; }
+    public void setModel(String model) { this.model = model; }
+
+    public int getMaxTokens() { return maxTokens; }
+    public void setMaxTokens(int maxTokens) { this.maxTokens = maxTokens; }
+
+    public double getTemperature() { return temperature; }
+    public void setTemperature(double temperature) { this.temperature = temperature; }
+
+    public int getMaxImageSize() { return maxImageSize; }
+    public void setMaxImageSize(int maxImageSize) { this.maxImageSize = maxImageSize; }
+
+    public int getMaxImages() { return maxImages; }
+    public void setMaxImages(int maxImages) { this.maxImages = maxImages; }
   }
 
   public static class Asr {

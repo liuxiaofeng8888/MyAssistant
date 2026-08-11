@@ -11,6 +11,10 @@ public class VoiceMessage {
   public String client_msg_id;
   public Integer seq;
   public String data_b64;
+  /** 图片 MIME 类型（image/jpeg, image/png 等） */
+  public String mime_type;
+  /** 多模态查询模式：describe / qa / tool */
+  public String vlm_mode;
 
   // server -> client fields
   public String conversation_id;
@@ -104,6 +108,38 @@ public class VoiceMessage {
     m.type = "wakeup_detected";
     m.client_msg_id = clientMsgId;
     m.text = wakeWord;
+    return m;
+  }
+
+  // ==================== 多模态相关 ====================
+
+  public static VoiceMessage vlmPartial(String clientMsgId, String text) {
+    VoiceMessage m = new VoiceMessage();
+    m.type = "vlm_partial";
+    m.client_msg_id = clientMsgId;
+    m.text = text;
+    m.is_final = false;
+    return m;
+  }
+
+  public static VoiceMessage vlmFinal(String clientMsgId, String text) {
+    VoiceMessage m = new VoiceMessage();
+    m.type = "vlm_final";
+    m.client_msg_id = clientMsgId;
+    m.text = text;
+    m.is_final = true;
+    return m;
+  }
+
+  /**
+   * 请求客户端补传图片。
+   * 语音输入后若未带图片但意图疑似需要视觉理解，服务端可用此消息请求补充。
+   */
+  public static VoiceMessage requestImage(String clientMsgId, String prompt) {
+    VoiceMessage m = new VoiceMessage();
+    m.type = "request_image";
+    m.client_msg_id = clientMsgId;
+    m.text = prompt;
     return m;
   }
 }

@@ -7,6 +7,9 @@ import com.myassistant.server.service.llm.NluResult;
 import com.myassistant.server.service.llm.NluService;
 import com.myassistant.server.service.tool.ToolDispatcher;
 import com.myassistant.server.service.tool.ToolResult;
+import com.myassistant.server.service.vlm.MultimodalContext;
+import com.myassistant.server.service.vlm.VlmResult;
+import com.myassistant.server.service.vlm.VlmService;
 import com.myassistant.server.service.wakeup.WakeGrammarRecognizer;
 import com.myassistant.server.service.wakeup.WakeWordResult;
 import com.myassistant.server.service.wakeup.WakeWordService;
@@ -38,6 +41,7 @@ public class VoiceWebSocketHandler extends TextWebSocketHandler {
   private final WakeWordService wakeup;
   private final MyAssistantProperties assistantProps;
   private final WakeGrammarRecognizer wakeGrammar;
+  private final VlmService vlm;
 
   private final ConcurrentHashMap<String, VoiceSessionState> states = new ConcurrentHashMap<>();
 
@@ -48,7 +52,8 @@ public class VoiceWebSocketHandler extends TextWebSocketHandler {
       ToolDispatcher tools,
       WakeWordService wakeup,
       MyAssistantProperties assistantProps,
-      ObjectProvider<WakeGrammarRecognizer> wakeGrammarProvider) {
+      ObjectProvider<WakeGrammarRecognizer> wakeGrammarProvider,
+      ObjectProvider<VlmService> vlmProvider) {
     this.om = om;
     this.asr = asr;
     this.nlu = nlu;
@@ -56,6 +61,7 @@ public class VoiceWebSocketHandler extends TextWebSocketHandler {
     this.wakeup = wakeup;
     this.assistantProps = assistantProps;
     this.wakeGrammar = wakeGrammarProvider.getIfAvailable();
+    this.vlm = vlmProvider.getIfAvailable();
   }
 
   @Override
@@ -202,6 +208,42 @@ public class VoiceWebSocketHandler extends TextWebSocketHandler {
         session.sendMessage(new TextMessage("{\"type\":\"pong\"}", true));
         break;
       }
+      // ============ 多模态消息 ============
+      case "image": {
+        // 客户端上传单张图片（Base64）
+        if (req.data_b64 == null || req.data_b64.isBlank()) {
+          send(session, VoiceMessage.error(req.client_msg_id, st.traceId, "BAD_REQUEST", "缺少图片 data_b64", false));
+          return;
+        }
+        String mime = req.mime_type != null ? req.mime_type : "image/jpeg";
+        st.multimodalCtx.addImage(new MultimodalContext.ImageInput(req.data_b64, mime));
+        send(session, VoiceMessage.assistantDelta(req.client_msg_id,
+            "已收到第 " + st.multimodalCtx.getImages().size() + " 张图片"));
+        break;
+      }
+      case "image_query": {
+        // 客户端发起多模态查询（图片 + 可选语音文本）
+        if (vlm == null) {
+          send(session, VoiceMessage.error(req.client_msg_id, st.traceId,
+              "VLM_UNAVAILABLE", "VLM 服务未配置", true));
+          return;
+        }
+        // 合并本轮 ASR 文本到多模态上下文
+        if (req.text != null && !req.text.isBlank()) {
+          st.multimodalCtx.setUserText(req.text);
+        }
+        // 解析 vlm_mode
+        if (req.vlm_mode != null) {
+          try {
+            st.multimodalCtx.setMode(MultimodalContext.Mode.valueOf(req.vlm_mode.toUpperCase()));
+          } catch (IllegalArgumentException ignored) {
+            st.multimodalCtx.setMode(MultimodalContext.Mode.QA);
+          }
+        }
+        processMultimodalTurn(session, st, req.client_msg_id);
+        break;
+      }
+      // ====================================
       default:
         send(session, VoiceMessage.error(req.client_msg_id, st.traceId, "BAD_REQUEST", "未知 type: " + req.type, false));
     }
@@ -249,6 +291,74 @@ public class VoiceWebSocketHandler extends TextWebSocketHandler {
       }
     }
     return wakeup.detect(userText);
+  }
+
+  // ==================== 多模态处理流水线 ====================
+
+  /**
+   * 处理多模态轮次：图片 + 文本 → VLM 理解 → (TOOL_CALL → 工具分发) 或 直接回复。
+   * 与纯语音链路（stop → ASR → NLU → Tool）平行独立。
+   */
+  private void processMultimodalTurn(WebSocketSession session, VoiceSessionState st, String clientMsgId)
+      throws Exception {
+
+    MultimodalContext ctx = st.multimodalCtx;
+    int maxImages = assistantProps.getVlm().getMaxImages();
+    if (ctx.getImages().size() > maxImages) {
+      send(session, VoiceMessage.error(clientMsgId, st.traceId,
+          "TOO_MANY_IMAGES", "最多支持 " + maxImages + " 张图片", false));
+      st.resetMultimodal();
+      return;
+    }
+
+    if (ctx.isEmpty()) {
+      send(session, VoiceMessage.error(clientMsgId, st.traceId,
+          "EMPTY_CONTEXT", "请先上传图片或输入文字", false));
+      return;
+    }
+
+    VlmResult vlmResult;
+    try {
+      vlmResult = vlm.understand(ctx);
+    } catch (Exception e) {
+      send(session, VoiceMessage.error(clientMsgId, st.traceId,
+          "VLM_FAILED", "视觉理解失败: " + e.getMessage(), true));
+      st.resetMultimodal();
+      return;
+    }
+
+    // 发送 VLM 回复
+    if (vlmResult.getAssistantText() != null && !vlmResult.getAssistantText().isBlank()) {
+      send(session, VoiceMessage.vlmPartial(clientMsgId, vlmResult.getAssistantText()));
+    }
+
+    if (vlmResult.getKind() == VlmResult.Kind.TOOL_CALL) {
+      // VLM 解析出了工具调用 → 走工具分发链路
+      send(session, VoiceMessage.toolCall(clientMsgId, vlmResult.getToolName(), vlmResult.getToolArgs()));
+      ToolResult tr;
+      try {
+        tr = tools.dispatch(vlmResult.getToolName(), vlmResult.getToolArgs());
+      } catch (Exception e) {
+        send(session, VoiceMessage.toolResult(clientMsgId, vlmResult.getToolName(),
+            false, Map.of("error", "exception")));
+        send(session, VoiceMessage.vlmFinal(clientMsgId, "执行视觉任务时出错了，请稍后重试。"));
+        st.resetMultimodal();
+        return;
+      }
+      send(session, VoiceMessage.toolResult(clientMsgId, vlmResult.getToolName(), tr.ok,
+          tr.ok ? tr.result : Map.of("code", tr.errorCode, "message", tr.errorMessage)));
+
+      if (tr.ok) {
+        send(session, VoiceMessage.vlmFinal(clientMsgId, vlmResult.getAssistantText()));
+      } else {
+        send(session, VoiceMessage.vlmFinal(clientMsgId, "视觉任务未能完成：" + tr.errorMessage));
+      }
+    } else {
+      // 纯文本回复
+      send(session, VoiceMessage.vlmFinal(clientMsgId, vlmResult.getAssistantText()));
+    }
+
+    st.resetMultimodal();
   }
 
   private void send(WebSocketSession session, VoiceMessage msg) throws Exception {

@@ -5,15 +5,16 @@
 | 版本 | 日期 | 作者 | 变更说明 |
 |------|------|------|----------|
 | v1.0.0 | 2026-08-10 | AI Assistant | 初始版本：梳理服务端与 Android 端完整逻辑流程，标注可优化点 |
+| v1.1.0 | 2026-08-11 | AI Assistant | 新增 VLM 多模态模块：服务端架构（策略模式+3种实现）、Android 图片采集、消息协议扩展 |
 
 ---
 
 ## 1. 项目概述
 
-**MyAssistant** 是一个语音助手 APP，实现「语音输入 → ASR → 对话/意图识别 → 工具调用 → TTS 播报」的可扩展闭环。
+**MyAssistant** 是一个语音助手 APP，实现「语音/图片输入 → ASR/VLM → 对话/意图识别 → 工具调用 → TTS 播报」的可扩展多模态闭环。
 
-- **Android 客户端**：Java 原生开发，集成 Vosk 离线 KWS（关键词唤醒）+ WebRTC VAD（语音活动检测）+ 系统 TTS 播报
-- **服务端**：Spring Boot，WebSocket 通信，可插拔 ASR（Vosk/讯飞/Mock），规则 NLU + 工具分发
+- **Android 客户端**：Java 原生开发，集成 Vosk 离线 KWS（关键词唤醒）+ WebRTC VAD（语音活动检测）+ 系统 TTS 播报 + 拍照/选图
+- **服务端**：Spring Boot，WebSocket 通信，可插拔 ASR（Vosk/讯飞/Mock）+ VLM（Mock/OpenAI/Qwen），规则 NLU + 工具分发
 
 ---
 
@@ -58,6 +59,7 @@
 │  ASR 实现: MockAsrService / VoskAsrService / IflytekAsr    │
 │  Wake: RuleBasedWakeWordService / NoopWakeWordService      │
 │  NLU: RuleBasedNluService (规则匹配)                        │
+│  VLM: MockVlmService / OpenAiVlmService / QwenVlmService   │
 │  Tool: InMemoryToolDispatcher (reminder.create)            │
 └─────────────────────────────────────────────────────────────┘
 ```
@@ -456,7 +458,118 @@ startRecording()
 
 ---
 
-## 8. 文件索引
+## 8. VLM 多模态模块（v1.1.0 新增）
+
+### 8.1 设计理念
+
+VLM 模块沿用项目现有的**策略模式**（与 ASR 一致），通过 `@ConditionalOnProperty` 实现可插拔：
+
+- 开发和调试用 `MockVlmService`（默认）
+- 生产环境切换到 `OpenAiVlmService`（GPT-4V/4o）或 `QwenVlmService`（通义千问 VL）
+
+### 8.2 多模态处理流水线
+
+```
+客户端
+    │
+    ├─ 拍照/选图 → CameraImageCapture → Base64 编码
+    │
+    ├─ MultimodalWsClient.sendImage(b64, mime)    → type: "image"
+    │    │  可多次发送累积多张图片
+    │    │
+    ├─ MultimodalWsClient.sendImageQuery(text, mode) → type: "image_query"
+    │
+    ▼
+服务端 VoiceWebSocketHandler
+    │
+    ├─ "image" 消息 → 图片累积到 VoiceSessionState.multimodalCtx
+    │
+    ├─ "image_query" 消息 → processMultimodalTurn()
+    │     │
+    │     ├─ 校验图片数量限制 (maxImages)
+    │     ├─ vlm.understand(ctx) → VlmResult
+    │     │
+    │     ├─ CHAT → vlm_partial + vlm_final
+    │     └─ TOOL_CALL → tool_call → tools.dispatch → tool_result → vlm_final
+    │     │
+    │     └─ resetMultimodal() 重置上下文
+    │
+    ▼
+客户端收到 vlm_final → 展示/TTS 播报
+```
+
+### 8.3 服务端文件
+
+| 文件 | 职责 |
+|------|------|
+| `service/vlm/MultimodalContext.java` | 多模态输入模型（文本 + 图片列表 + 模式） |
+| `service/vlm/VlmResult.java` | VLM 理解结果（CHAT / TOOL_CALL） |
+| `service/vlm/VlmService.java` | VLM 服务接口（策略模式） |
+| `service/vlm/MockVlmService.java` | MVP 占位实现（默认） |
+| `service/vlm/OpenAiVlmService.java` | GPT-4V / OpenAI 兼容接口 |
+| `service/vlm/QwenVlmService.java` | 通义千问 VL（DashScope API） |
+
+### 8.4 Android 端文件
+
+| 文件 | 职责 |
+|------|------|
+| `multimodal/CameraImageCapture.java` | 拍照/相册选取 → 压缩 → Base64 编码 |
+| `multimodal/MultimodalWsClient.java` | 封装图片发送和多模态查询 |
+
+### 8.5 消息协议扩展
+
+**客户端 → 服务端（新增）**：
+
+| type | 字段 | 说明 |
+|------|------|------|
+| `image` | `client_msg_id`, `data_b64`, `mime_type` | 上传单张 Base64 图片 |
+| `image_query` | `client_msg_id`, `text`, `vlm_mode` | 发起多模态查询（模式：describe/qa/tool） |
+
+**服务端 → 客户端（新增）**：
+
+| type | 字段 | 说明 |
+|------|------|------|
+| `vlm_partial` | `client_msg_id`, `text`, `is_final=false` | VLM 流式回复片段 |
+| `vlm_final` | `client_msg_id`, `text`, `is_final=true` | VLM 最终回复 |
+| `request_image` | `client_msg_id`, `text` | 请求客户端补充图片 |
+
+### 8.6 配置项
+
+| 配置路径 | 环境变量 | 默认值 | 说明 |
+|----------|----------|--------|------|
+| `myassistant.vlm.provider` | `MYASSISTANT_VLM_PROVIDER` | `mock` | VLM 提供商：mock/openai/qwen |
+| `myassistant.vlm.api-url` | `MYASSISTANT_VLM_API_URL` | — | API 端点 URL |
+| `myassistant.vlm.api-key` | `MYASSISTANT_VLM_API_KEY` | — | API Key |
+| `myassistant.vlm.model` | `MYASSISTANT_VLM_MODEL` | — | 模型名称 |
+| `myassistant.vlm.max-tokens` | — | `1024` | 最大输出 token |
+| `myassistant.vlm.temperature` | — | `0.7` | 生成温度 |
+| `myassistant.vlm.max-image-size` | — | `2048` | 图片长边最大像素 |
+| `myassistant.vlm.max-images` | — | `5` | 单次最多图片数 |
+
+### 8.7 快速切换 VLM 提供商
+
+```bash
+# Mock（默认，无需配置）
+# 无需额外设置
+
+# OpenAI GPT-4V
+MYASSISTANT_VLM_PROVIDER=openai \
+MYASSISTANT_VLM_API_URL=https://api.openai.com/v1/chat/completions \
+MYASSISTANT_VLM_API_KEY=sk-xxx \
+MYASSISTANT_VLM_MODEL=gpt-4o \
+mvn spring-boot:run
+
+# 通义千问 VL
+MYASSISTANT_VLM_PROVIDER=qwen \
+MYASSISTANT_VLM_API_URL=https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions \
+MYASSISTANT_VLM_API_KEY=sk-xxx \
+MYASSISTANT_VLM_MODEL=qwen-vl-plus \
+mvn spring-boot:run
+```
+
+---
+
+## 9. 文件索引
 
 ### 服务端（`server/src/main/java/com/myassistant/server/`）
 
