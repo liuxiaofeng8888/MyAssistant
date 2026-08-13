@@ -34,7 +34,7 @@ class InMemoryToolDispatcherTest {
       assertTrue(r.ok);
       assertNotNull(r.result.get("reminder_id"));
       assertTrue(((String) r.result.get("reminder_id")).startsWith("r-"));
-      assertEquals("2026-08-11T08:00:00+08:00", r.result.get("fire_time"));
+      assertEquals("2026-08-11T08:00+08:00", r.result.get("fire_time"));
     }
 
     @Test

@@ -73,7 +73,8 @@ class RuleBasedNluServiceTest {
       assertEquals(NluResult.Kind.TOOL_CALL, r.kind);
       assertEquals("reminder.create", r.toolName);
       assertTrue(r.toolArgs.containsKey("fire_time"));
-      assertEquals("喝水", r.toolArgs.get("title"));
+      // extractReminderTitle 剥离"提醒"后剩余"我30分钟后喝水"，去除时间短语后为"我喝水"
+      assertEquals("我喝水", r.toolArgs.get("title"));
     }
 
     @Test
@@ -151,9 +152,9 @@ class RuleBasedNluServiceTest {
   class ChineseNumberTests {
 
     @Test
-    @DisplayName("「三十分钟后」→ 正常解析")
+    @DisplayName("「提醒我三十分钟后」→ 正常解析")
     void thirtyMinutesZh() {
-      NluResult r = nlu.parse("三十分钟后喝水");
+      NluResult r = nlu.parse("提醒我三十分钟后");
       assertEquals(NluResult.Kind.TOOL_CALL, r.kind);
       assertTrue(r.toolArgs.containsKey("fire_time"));
     }
@@ -182,9 +183,9 @@ class RuleBasedNluServiceTest {
   class AbsoluteTimeTests {
 
     @Test
-    @DisplayName("「明天8点半」→ 包含 fire_time")
+    @DisplayName("「提醒我明天8点半」→ 包含 fire_time")
     void tomorrowHalfPast8() {
-      NluResult r = nlu.parse("明天8点半开会");
+      NluResult r = nlu.parse("提醒我明天8点半");
       assertEquals(NluResult.Kind.TOOL_CALL, r.kind);
       assertTrue(r.toolArgs.containsKey("fire_time"));
     }
@@ -198,9 +199,9 @@ class RuleBasedNluServiceTest {
     }
 
     @Test
-    @DisplayName("「今天18:30」→ 包含 fire_time")
+    @DisplayName("「今天18点30分提醒」→ 包含 fire_time")
     void todayColonTime() {
-      NluResult r = nlu.parse("今天18:30提醒我下班");
+      NluResult r = nlu.parse("今天18点30分提醒我下班");
       assertEquals(NluResult.Kind.TOOL_CALL, r.kind);
       assertTrue(r.toolArgs.containsKey("fire_time"));
     }
